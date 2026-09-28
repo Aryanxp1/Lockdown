@@ -250,7 +250,9 @@ def serve_static(request: httpx.Request) -> httpx.Response:
 
 
 def build_server(host: str | None = None, port: int | None = None) -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((host or config.HOST, port or config.PORT), PortalHandler)
+    """Bind the portal. `port=0` means "any free port" -- tests rely on that."""
+    httpd = ThreadingHTTPServer((host or config.HOST, config.PORT if port is None else port),
+                                PortalHandler)
     httpd.daemon_threads = True
     return httpd
 

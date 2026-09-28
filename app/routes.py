@@ -16,22 +16,35 @@ from __future__ import annotations
 
 import urllib.parse
 
-from . import (audit, auth, config, db, events as events_mod, http,
+from . import (audit, auth, config, db, eventadmin, events as events_mod, http,
                results as results_mod, scoring, seed as fixtures_seed, security,
                timeutil, util)
 from .views import (
     audit_trail,
     evaluation_form,
+    event_assignments_page,
+    event_directory,
+    event_form,
+    event_judges_page,
+    event_overview,
+    event_page,
+    event_results_page,
+    event_reviews_page,
+    event_roster_page,
+    event_settings_page,
+    event_stages_page,
     gallery as gallery_view,
     judge_dashboard,
     judges_roster,
     landing,
-    organizer_dashboard,
+    manage_home,
     participant_dashboard,
     project_detail as project_detail_view,
     project_form,
     render_shell,
+    results_directory,
     results_leaderboard,
+    results_scope_note,
     signin_form,
     submissions_list,
 )
@@ -52,6 +65,14 @@ def build_routes() -> http.Router:
     r.get("/projects", handle_gallery, public=True)  # spec alias for the gallery
     r.get("/gallery/{project_id}", handle_project_detail, public=True)
     r.get("/results", handle_results, public=True)
+
+    # --- the hackathon archive ------------------------------------------
+    # An install is a shelf of competitions: the directory lists them, and each
+    # one has its own cover, gallery and ledger. Nothing here needs an account.
+    r.get("/events", handle_events_directory, public=True)
+    r.get("/events/{slug}", handle_event_page, public=True)
+    r.get("/events/{slug}/gallery", handle_event_gallery, public=True)
+    r.get("/events/{slug}/results", handle_event_results, public=True)
 
     # --- sessions -------------------------------------------------------
     r.get("/signin", handle_signin_page, public=True)
@@ -91,7 +112,49 @@ def build_routes() -> http.Router:
            roles=["judge", "admin"], csrf=True)
 
     # --- organizer ------------------------------------------------------
-    r.get("/organizer", handle_organizer_dashboard, roles=STAFF_ROLES)
+    # `/organizer` is the shelf: the hackathons this caller may operate.
+    r.get("/organizer", handle_manage_home, roles=STAFF_ROLES)
+    r.get("/organizer/events/new", handle_event_new, roles=STAFF_ROLES)
+    r.post("/organizer/events/new", handle_event_create, roles=STAFF_ROLES, csrf=True)
+
+    # One hackathon at a time. Every handler below resolves `{event_id}` and
+    # checks `events.can_manage` before it reads or writes a row, so the URL
+    # alone never grants access to somebody else's event.
+    r.get("/organizer/events/{event_id}", handle_event_manage, roles=STAFF_ROLES)
+    r.get("/organizer/events/{event_id}/stages", handle_event_stages, roles=STAFF_ROLES)
+    r.post("/organizer/events/{event_id}/stages", handle_event_stage_add,
+           roles=STAFF_ROLES, csrf=True)
+    r.post("/organizer/events/{event_id}/stages/remove", handle_event_stage_remove,
+           roles=STAFF_ROLES, csrf=True)
+    r.get("/organizer/events/{event_id}/teams", handle_event_teams, roles=STAFF_ROLES)
+    r.get("/organizer/events/{event_id}/submissions", handle_event_submissions,
+          roles=STAFF_ROLES)
+    r.get("/organizer/events/{event_id}/judges", handle_event_judges, roles=STAFF_ROLES)
+    r.post("/organizer/events/{event_id}/judges", handle_event_judge_invite,
+           roles=STAFF_ROLES, csrf=True)
+    r.get("/organizer/events/{event_id}/assignments", handle_event_assignments,
+          roles=STAFF_ROLES)
+    r.post("/organizer/events/{event_id}/assignments", handle_event_assign,
+           roles=STAFF_ROLES, csrf=True)
+    r.post("/organizer/events/{event_id}/assignments/revoke", handle_event_unassign,
+           roles=STAFF_ROLES, csrf=True)
+    r.get("/organizer/events/{event_id}/reviews", handle_event_reviews, roles=STAFF_ROLES)
+    r.get("/organizer/events/{event_id}/results", handle_event_results_page,
+          roles=STAFF_ROLES)
+    r.post("/organizer/events/{event_id}/results", handle_event_publish,
+           roles=STAFF_ROLES, csrf=True)
+    r.get("/organizer/events/{event_id}/audit", handle_event_audit, roles=STAFF_ROLES)
+    r.get("/organizer/events/{event_id}/settings", handle_event_settings,
+          roles=STAFF_ROLES)
+    r.post("/organizer/events/{event_id}/settings", handle_event_settings_save,
+           roles=STAFF_ROLES, csrf=True)
+    r.post("/organizer/events/{event_id}/organizers", handle_event_organizer_add,
+           roles=STAFF_ROLES, csrf=True)
+    r.post("/organizer/events/{event_id}/organizers/remove",
+           handle_event_organizer_remove, roles=STAFF_ROLES, csrf=True)
+
+    # The shortcuts organizers already had. They act on the hackathon the caller
+    # is working in, and refuse that event when the caller does not manage it.
     r.get("/organizer/submissions", handle_organizer_submissions, roles=STAFF_ROLES)
     r.get("/organizer/judges", handle_organizer_judges, roles=STAFF_ROLES)
     r.get("/organizer/audit", handle_organizer_audit, roles=STAFF_ROLES)
@@ -239,6 +302,226 @@ def _other_events(active_event: dict, user) -> list[dict]:
     return events
 
 
+def _event_cards(events) -> list[dict]:
+    """Each event with the headline numbers its card prints."""
+    return [{"event": event, "metrics": events_mod.event_metrics(event)}
+            for event in events]
+
+
+def _public_event(reference: str, user) -> dict:
+    """Resolve an event for a public page, keeping drafts out of sight.
+
+    A draft is invisible to visitors and participants; its own organizers may
+    still look at it through the same URL while they build it.
+    """
+    event = _event_row(events_mod.require_event(reference))
+    if event["status"] == "draft" and not events_mod.can_manage(user, event):
+        raise http.Problem(404, "event_not_found", "No such event.",
+                           "Draft hackathons are only visible to their organizers.")
+    return event
+
+
+def _managed_event(req: http.Request) -> dict:
+    """The hackathon this organizer is working in, once authorization agrees.
+
+    `?event=<id or slug>` picks one; otherwise the primary event is used. Either
+    way the caller has to manage it, so an organizer cannot read another
+    event's submissions by editing a query string.
+    """
+    event = _event_row(events_mod.default_event_for(
+        req.user, _requested_event_ref(req)))
+    if not events_mod.can_manage(req.user, event):
+        audit.refused(req, "event.manage_refused",
+                      "%s asked to operate %s" % (req.user["email"], event["id"]),
+                      entity_type="event", entity_id=event["id"])
+        raise http.Problem(403, "not_your_event",
+                           "You do not manage that hackathon.",
+                           "Only its organizers, or an administrator, may open it.")
+    return event
+
+
+def _event_scope(req: http.Request) -> dict:
+    """Resolve `{event_id}` from the URL and prove the caller may manage it."""
+    event = _event_row(events_mod.require_event(req.params.get("event_id", "")))
+    if not events_mod.can_manage(req.user, event):
+        audit.refused(req, "event.manage_refused",
+                      "%s asked to manage %s" % (req.user["email"], event["id"]),
+                      entity_type="event", entity_id=event["id"])
+        raise http.Problem(403, "not_your_event",
+                           "You do not manage that hackathon.",
+                           "Adding yourself as an organizer is the only way in.")
+    return event
+
+
+# --- one event's rows -------------------------------------------------------
+#
+# These read only what belongs to `event["id"]`. Two hackathons on one install
+# never share a team, a submission, an assignment or a review, so "show the
+# event I manage" is a filter, not a convention.
+
+def _event_tracks(event) -> list[dict]:
+    return db.dicts(db.query("SELECT * FROM tracks WHERE event_id = ? ORDER BY seq",
+                             (event["id"],)))
+
+
+def _event_prizes(event) -> list[dict]:
+    return db.dicts(db.query("SELECT * FROM prizes WHERE event_id = ? ORDER BY rank",
+                             (event["id"],)))
+
+
+def _gallery_count(event) -> int:
+    """Submissions on exhibition: canonical rows only, drafts stay hidden."""
+    return db.scalar("""SELECT COUNT(*) FROM projects
+                         WHERE event_id = ? AND duplicate_of IS NULL
+                           AND status = 'submitted'""", (event["id"],), 0)
+
+
+def _timeline_rows(event) -> list[dict]:
+    """The dates an entrant meets, in stage order, with where each one stands."""
+    stamp = timeutil.now_iso()
+    rows = []
+    for _key, name, _description, opens_field, closes_field in events_mod.STAGE_SEQUENCE:
+        closes_at, opens_at = event[closes_field], event[opens_field]
+        at = closes_at or opens_at
+        if not at:
+            continue
+        if closes_at and closes_at < stamp:
+            state, label = "past", "closed"
+        elif opens_at and opens_at > stamp:
+            state, label = "next", "upcoming"
+        else:
+            state, label = "open", "open now"
+        rows.append({"at": at, "label": name, "state": state, "state_label": label})
+    return rows
+
+
+def _event_judges(event) -> list[dict]:
+    """The judges of this hackathon: invited, or already holding work here."""
+    return db.dicts(db.query("""
+        SELECT u.id, u.name, u.email,
+               (SELECT COUNT(*) FROM assignments a
+                 WHERE a.event_id = ? AND a.judge_user_id = u.id
+                   AND a.status != 'revoked') AS assignments,
+               (SELECT COUNT(*) FROM reviews r
+                 WHERE r.event_id = ? AND r.judge_user_id = u.id
+                   AND r.status IN ('submitted', 'finalized')) AS reviews
+          FROM users u
+         WHERE u.id IN (SELECT user_id FROM judge_invitations
+                         WHERE event_id = ? AND user_id IS NOT NULL
+                        UNION
+                        SELECT judge_user_id FROM assignments WHERE event_id = ?)
+         ORDER BY u.name ASC""", (event["id"],) * 4))
+
+
+def _event_teams(event) -> tuple[list[dict], dict]:
+    """(teams, members-by-team) for one hackathon."""
+    teams = db.dicts(db.query("""
+        SELECT t.*, (SELECT p.title FROM projects p
+                      WHERE p.team_id = t.id AND p.event_id = t.event_id
+                      ORDER BY p.created_at DESC LIMIT 1) AS project_title
+          FROM teams t WHERE t.event_id = ? ORDER BY t.name ASC""", (event["id"],)))
+    members: dict[str, list[dict]] = {}
+    for row in db.query("""
+            SELECT tm.team_id, u.name, tm.role FROM team_members tm
+              JOIN users u ON u.id = tm.user_id
+              JOIN teams t ON t.id = tm.team_id
+             WHERE t.event_id = ? ORDER BY tm.joined_at ASC""", (event["id"],)):
+        members.setdefault(row["team_id"], []).append(
+            {"name": row["name"], "role": row["role"]})
+    return teams, members
+
+
+def _event_assignments(event) -> list[dict]:
+    """Who has which submission here, with the judge's latest review status."""
+    return db.dicts(db.query("""
+        SELECT a.*, p.title AS project_title, u.name AS judge_name,
+               u.email AS judge_email, r.status AS review_status
+          FROM assignments a
+          JOIN projects p ON p.id = a.project_id
+          JOIN users u ON u.id = a.judge_user_id
+          LEFT JOIN reviews r ON r.id = (SELECT id FROM reviews
+                                          WHERE project_id = a.project_id
+                                            AND judge_user_id = a.judge_user_id
+                                          ORDER BY revision_no DESC LIMIT 1)
+         WHERE a.event_id = ? AND a.status != 'revoked'
+         ORDER BY p.title ASC, u.name ASC""", (event["id"],)))
+
+
+def _event_reviews(event, limit: int = 200) -> list[dict]:
+    return db.dicts(db.query("""
+        SELECT r.*, p.title AS project_title, u.name AS judge_name
+          FROM reviews r
+          JOIN projects p ON p.id = r.project_id
+          JOIN users u ON u.id = r.judge_user_id
+         WHERE r.event_id = ?
+         ORDER BY r.updated_at DESC, r.id ASC LIMIT ?""", (event["id"], limit)))
+
+
+def _event_audit_scope() -> str:
+    """The WHERE clause that keeps an audit page inside one hackathon.
+
+    `audit_log` records what changed and which row changed, so an event's slice
+    is its own row plus every project, team, assignment and review it owns.
+    """
+    return """entity_id = ?
+           OR entity_id IN (SELECT id FROM projects WHERE event_id = ?)
+           OR entity_id IN (SELECT id FROM teams WHERE event_id = ?)
+           OR entity_id IN (SELECT id FROM assignments WHERE event_id = ?)
+           OR entity_id IN (SELECT id FROM reviews WHERE event_id = ?)"""
+
+
+def _event_audit(event, *, page: int, per_page: int = 50) -> tuple[list[dict], int]:
+    """(records, total_pages) for this hackathon's slice of the audit trail."""
+    scope = _event_audit_scope()
+    params = (event["id"],) * 5
+    total = db.scalar("SELECT COUNT(*) FROM audit_log WHERE " + scope, params, 0)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
+    records = _audit_rows(db.query(
+        "SELECT * FROM audit_log WHERE " + scope +
+        " ORDER BY at DESC, rowid DESC LIMIT ? OFFSET ?",
+        params + (per_page, (page - 1) * per_page)))
+    return records, total_pages
+
+
+# --- confirmations ----------------------------------------------------------
+#
+# There is no server-side flash queue in this portal (a session is a token and a
+# CSRF secret, nothing more). A write therefore redirects with
+# `?done=<key>&what=<detail>`, and the page it lands on renders the sentence.
+
+DONE_MESSAGES = {
+    "created": "Hackathon created.",
+    "saved": "Changes saved.",
+    "stage-added": "Stage added.",
+    "stage-removed": "Stage removed.",
+    "judge-invited": "Judge added to this hackathon: %s.",
+    "assigned": "Assignment recorded: %s.",
+    "revoked": "Assignment revoked: %s.",
+    "organizer-added": "Organizer added: %s.",
+    "organizer-removed": "Organizer removed: %s.",
+    "published": "Results published as revision %s.",
+}
+
+
+def _done_note(req: http.Request) -> str:
+    """The one-line confirmation a redirect carries back."""
+    message = DONE_MESSAGES.get(req.q("done", "").strip())
+    if not message:
+        return ""
+    if "%s" not in message:
+        return message
+    detail = req.q("what", "").strip()
+    return message % detail if detail else message.replace("%s", "").strip()
+
+
+def _redirect_done(path: str, done: str, what: str = "") -> http.Response:
+    query = "?done=" + urllib.parse.quote(done, safe="")
+    if what:
+        query += "&what=" + urllib.parse.quote(what, safe="")
+    return http.Response.redirect(path + query)
+
+
 # --- public handlers --------------------------------------------------------
 
 def handle_landing(req: http.Request) -> http.Response:
@@ -278,6 +561,21 @@ def handle_gallery(req: http.Request) -> http.Response:
         return http.Response.html(render_shell(
             title="Gallery", user=req.user, csrf_token=_csrf(req),
             content="<p>No event has been published in this portal yet.</p>"))
+    return _gallery_response(req, event)
+
+
+def handle_event_gallery(req: http.Request) -> http.Response:
+    """`/events/{slug}/gallery`: the exhibition for one named hackathon."""
+    return _gallery_response(req, _public_event(req.params.get("slug", ""), req.user))
+
+
+def _gallery_response(req: http.Request, event: dict) -> http.Response:
+    """Render one event's gallery, once the event may be looked at."""
+    if not events_mod.gallery_is_visible(event) \
+            and not events_mod.can_manage(req.user, event):
+        raise http.Problem(403, "gallery_hidden",
+                           "The gallery for %s is not public." % event["name"],
+                           "Its organizers can still browse it while signed in.")
 
     track_filter = req.q("track", "").strip()
     query = req.q("q", "").strip()
@@ -322,6 +620,35 @@ def handle_gallery(req: http.Request) -> http.Response:
         csrf_token=_csrf(req), event=event))
 
 
+def handle_events_directory(req: http.Request) -> http.Response:
+    """The archive: every hackathon this install has run, described by its card.
+
+    No active event here either: the archive is a shelf, not one competition.
+    """
+    body = event_directory(_event_cards(events_mod.visible_events()),
+                           empty_action="/signin")
+    return http.Response.html(render_shell(
+        title="Hackathons", content=body, user=req.user, current_path="/events",
+        csrf_token=_csrf(req)))
+
+
+def handle_event_page(req: http.Request) -> http.Response:
+    """One hackathon's public cover: identity, stage, dates, tracks and prizes."""
+    event = _public_event(req.params.get("slug", ""), req.user)
+    body = event_page(
+        event=event, metrics=events_mod.event_metrics(event),
+        stages=[_stage_row(stage) for stage in events_mod.stage_pipeline(event)],
+        timeline_rows=_timeline_rows(event),
+        tracks=_event_tracks(event), prizes=_event_prizes(event),
+        can_manage=events_mod.can_manage(req.user, event),
+        gallery_visible=events_mod.gallery_is_visible(event),
+        results_visible=events_mod.results_are_visible(event),
+        gallery_count=_gallery_count(event))
+    return http.Response.html(render_shell(
+        title=event["name"], content=body, user=req.user, current_path="/events",
+        csrf_token=_csrf(req), event=event))
+
+
 def handle_project_detail(req: http.Request) -> http.Response:
     """One submission in full: dossier, team, version history, discussion."""
     project_id = req.params.get("project_id", "")
@@ -363,18 +690,47 @@ def handle_project_detail(req: http.Request) -> http.Response:
 
 
 def handle_results(req: http.Request) -> http.Response:
+    """The results archive, and the ledger inside it.
+
+    A standings table is only meaningful for one hackathon, so with more than
+    one published event this page is the index that leads to them. On an install
+    that ran a single event there is nothing to choose between, and the
+    standings are rendered directly -- the page a one-event portal always had.
+    """
+    events = [event for event in events_mod.visible_events()
+              if events_mod.results_are_visible(event)]
+    if len(events) == 1:
+        return _results_response(req, events[0])
+    if not events:
+        return http.Response.html(render_shell(
+            title="Results", user=req.user, csrf_token=_csrf(req),
+            content="<p>No event has been published in this portal yet.</p>"))
+
+    body = results_directory(_event_cards(events),
+                             user_role=req.user["role"] if req.user else None)
+    return http.Response.html(render_shell(
+        title="Results", content=body, user=req.user, current_path="/results",
+        csrf_token=_csrf(req), event=_event_row(events_mod.primary_event())))
+
+
+def handle_event_results(req: http.Request) -> http.Response:
+    """`/events/{slug}/results`: one hackathon's published ledger."""
+    event = _public_event(req.params.get("slug", ""), req.user)
+    if not events_mod.results_are_visible(event) \
+            and not events_mod.can_manage(req.user, event):
+        raise http.Problem(403, "results_hidden",
+                           "The results for %s are not public." % event["name"],
+                           "Its organizers can still read them while signed in.")
+    return _results_response(req, event)
+
+
+def _results_response(req: http.Request, event: dict) -> http.Response:
     """Published standings, and nothing else.
 
     Before publication this page renders an embargo panel for everyone except
     organizers, and the handler hands the template an empty table rather than
     the live numbers, so an embargo cannot be undone by editing the HTML.
     """
-    event = _event_row(events_mod.primary_event())
-    if event is None:
-        return http.Response.html(render_shell(
-            title="Results", user=req.user, csrf_token=_csrf(req),
-            content="<p>No event has been published in this portal yet.</p>"))
-
     publication = events_mod.results_published(event)
     staff = bool(req.user) and req.user["role"] in ("organizer", "admin")
 
@@ -387,12 +743,14 @@ def handle_results(req: http.Request) -> http.Response:
         ranked = [_live_row(project)
                   for project in scoring.scoreboard(event)["ranked"]]
 
-    body = results_leaderboard(event=event, ranked=ranked,
-                              is_published=publication is not None,
-                              user_role=req.user["role"] if req.user else None)
+    body = results_scope_note(event=event, publication=publication) + \
+        results_leaderboard(event=event, ranked=ranked,
+                            is_published=publication is not None,
+                            user_role=req.user["role"] if req.user else None)
     return http.Response.html(render_shell(
         title="Results", content=body, user=req.user, current_path="/results",
         csrf_token=_csrf(req), event=event))
+
 
 
 def _published_row(item: dict, index: int) -> dict:
@@ -988,33 +1346,80 @@ def handle_judge_evaluate_save(req: http.Request) -> http.Response:
 
 # --- organizer handlers -----------------------------------------------------
 
-def handle_organizer_dashboard(req: http.Request) -> http.Response:
-    """The operations desk: counts, recent actions, publishing."""
-    event = _event_row(events_mod.primary_event())
-    if event is None:
-        raise http.Problem(404, "no_events", "No event exists in this portal yet.")
-    counts = events_mod.event_counts(event["id"])
-    stats = {"projects": counts["projects_submitted"], "teams": counts["teams"],
-             "judges": counts["judges"], "reviews": counts["reviews_submitted"],
-             "drafts": counts["projects_draft"], "pending": counts["reviews_draft"],
-             "assignments": counts["assignments"]}
-    recent = _audit_rows(db.query(
-        "SELECT * FROM audit_log ORDER BY at DESC, rowid DESC LIMIT 8"))
-    body = organizer_dashboard(event=dict(event), stats=stats, recent_audit=recent,
-                               csrf_token=_csrf(req))
+def handle_manage_home(req: http.Request) -> http.Response:
+    """My Hackathons: the shelf of events this caller may operate.
+
+    The shell is rendered without an active event on purpose: this page is about
+    several hackathons, so it does not borrow the masthead of one of them.
+    """
+    events = events_mod.manageable_events(req.user)
+    body = manage_home(actor=_actor(req.user), events=_event_cards(events),
+                       can_create=req.user["role"] in ("organizer", "admin"))
     return http.Response.html(render_shell(
-        title="Operations Command", content=body, user=req.user,
-        current_path="/organizer", csrf_token=_csrf(req), event=event))
+        title="My Hackathons", content=body, user=req.user, current_path="/organizer",
+        csrf_token=_csrf(req)))
+
+
+def handle_event_new(req: http.Request) -> http.Response:
+    """The empty hackathon form, pre-filled with a sensible schedule."""
+    body = event_form(values=eventadmin.blank_form(), errors={}, csrf_token=_csrf(req))
+    return http.Response.html(render_shell(
+        title="Create Hackathon", content=body, user=req.user,
+        current_path="/organizer", csrf_token=_csrf(req)))
+
+
+def handle_event_create(req: http.Request) -> http.Response:
+    """Create a hackathon, or hand the refused form back with its errors.
+
+    The browser is a convenience: the same `validate` runs for a hand-written
+    POST, and nothing is written until every field passes.
+    """
+    values, errors = eventadmin.validate(req.form)
+    if errors:
+        audit.refused(req, "event.create_refused",
+                      "Refused to create %r: %s" % (req.field("name", ""),
+                                                    ", ".join(sorted(errors))),
+                      entity_type="event")
+        body = event_form(values=dict(req.form), errors=errors, csrf_token=_csrf(req))
+        return http.Response.html(render_shell(
+            title="Create Hackathon", content=body, user=req.user,
+            current_path="/organizer", csrf_token=_csrf(req),
+            error="Nothing was created: %d field%s need attention."
+                  % (len(errors), "" if len(errors) == 1 else "s")), status=400)
+
+    created = eventadmin.create(values, _actor(req.user))
+    audit.record(action="event.created", entity_type="event",
+                 entity_id=created["event_id"],
+                 summary="Created hackathon %s" % created["name"], request=req,
+                 after={"slug": created["slug"], "status": values["status"],
+                        "seq": created["seq"]})
+    return _redirect_done("/organizer/events/" + created["event_id"], "created")
+
+
+def handle_event_manage(req: http.Request) -> http.Response:
+    """One hackathon's management overview: state, numbers, people, next steps."""
+    event = _event_scope(req)
+    body = event_overview(
+        event=event, metrics=events_mod.event_metrics(event),
+        stages=[_stage_row(stage) for stage in events_mod.stage_pipeline(event)],
+        timeline_rows=_timeline_rows(event),
+        organizers=events_mod.organizers_of(event["id"]),
+        judges=_event_judges(event), csrf_token=_csrf(req),
+        actor_role=req.user["role"],
+        gallery_visible=events_mod.gallery_is_visible(event),
+        results_visible=events_mod.results_are_visible(event))
+    return http.Response.html(render_shell(
+        title="Managing %s" % event["name"], content=body, user=req.user,
+        current_path="/organizer", csrf_token=_csrf(req), event=event,
+        notice=_done_note(req)))
 
 
 def handle_organizer_submissions(req: http.Request) -> http.Response:
     """Every submission in the event, superseded duplicates included."""
-    event = _event_row(events_mod.primary_event())
-    if event is None:
-        raise http.Problem(404, "no_events", "No event exists in this portal yet.")
+    event = _managed_event(req)
     projects = _decorate_projects(db.query(
         PROJECT_SELECT + " WHERE p.event_id = ? ORDER BY p.title ASC", (event["id"],)))
-    body = submissions_list(projects=projects, event=dict(event))
+    body = submissions_list(projects=projects, event=event)
     return http.Response.html(render_shell(
         title="Submissions", content=body, user=req.user,
         current_path="/organizer/submissions", csrf_token=_csrf(req), event=event))
@@ -1022,9 +1427,7 @@ def handle_organizer_submissions(req: http.Request) -> http.Response:
 
 def handle_organizer_judges(req: http.Request) -> http.Response:
     """Judge roster plus the calibration numbers normalization depends on."""
-    event = _event_row(events_mod.primary_event())
-    if event is None:
-        raise http.Problem(404, "no_events", "No event exists in this portal yet.")
+    event = _managed_event(req)
     judges = db.dicts(db.query(
         "SELECT * FROM users WHERE role = 'judge' ORDER BY name ASC"))
     criteria = scoring.normalise_weights(scoring.criteria_for_event(event["id"]))
@@ -1034,33 +1437,32 @@ def handle_organizer_judges(req: http.Request) -> http.Response:
         item = dict(row)
         item["flags"] = scoring.flag_labels(item.get("flags") or [])
         stats[judge_id] = item
-    body = judges_roster(judges=judges, stats=stats)
+    body = judges_roster(judges=judges, stats=stats, event=event)
     return http.Response.html(render_shell(
         title="Judges", content=body, user=req.user,
         current_path="/organizer/judges", csrf_token=_csrf(req), event=event))
 
 
 def handle_organizer_audit(req: http.Request) -> http.Response:
-    """The append-only log, newest first."""
+    """This event's slice of the append-only log, newest first."""
+    event = _managed_event(req)
     page = _page_number(req)
-    per_page = 50
-    total = db.scalar("SELECT COUNT(*) FROM audit_log", (), 0)
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    page = min(page, total_pages)
-    records = _audit_rows(db.query(
-        """SELECT * FROM audit_log ORDER BY at DESC, rowid DESC LIMIT ? OFFSET ?""",
-        (per_page, (page - 1) * per_page)))
-    body = audit_trail(records=records, page=page, total_pages=total_pages)
+    records, total_pages = _event_audit(event, page=page)
+    body = audit_trail(records=records, page=min(page, total_pages),
+                       total_pages=total_pages, event=event)
     return http.Response.html(render_shell(
         title="Audit Trail", content=body, user=req.user,
-        current_path="/organizer/audit", csrf_token=_csrf(req)))
+        current_path="/organizer/audit", csrf_token=_csrf(req), event=event))
 
 
 def handle_organizer_publish(req: http.Request) -> http.Response:
     """Freeze the standings as a new revision and issue certificates."""
-    event = _event_row(events_mod.primary_event())
-    if event is None:
-        raise http.Problem(404, "no_events", "No event exists in this portal yet.")
+    event = _managed_event(req)
+    if event["status"] == "draft":
+        raise http.Problem(403, "event_not_published",
+                           "Publish the hackathon before releasing its results.",
+                           "A draft event is invisible, so the ledger would have "
+                           "no readers.")
     note = req.field("note", "").strip() or "Manual release from the command center."
     publication = results_mod.publish(event, actor=_actor(req.user), note=note,
                                       board=scoring.scoreboard(event))
@@ -1070,7 +1472,261 @@ def handle_organizer_publish(req: http.Request) -> http.Response:
                      len(certificates), publication["revision"]),
                  request=req, after={"revision": publication["revision"],
                                      "certificates": len(certificates)})
-    return http.Response.redirect("/results")
+    return _redirect_done("/organizer/events/%s/results" % event["id"], "published",
+                          str(publication["revision"]))
+
+
+# --- per-event management handlers ------------------------------------------
+
+def _manage_path(event, suffix: str = "") -> str:
+    """`/organizer/events/{id}` plus a tab, so redirect targets cannot drift."""
+    return "/organizer/events/%s%s" % (event["id"], suffix)
+
+
+def handle_event_stages(req: http.Request) -> http.Response:
+    """The stage table for one event, plus what this event invented itself."""
+    event = _event_scope(req)
+    body = event_stages_page(event=event, stages=events_mod.stages(event),
+                             csrf_token=_csrf(req))
+    return http.Response.html(render_shell(
+        title="Stages", content=body, user=req.user, current_path="/organizer",
+        csrf_token=_csrf(req), event=event, notice=_done_note(req)))
+
+
+def handle_event_stage_add(req: http.Request) -> http.Response:
+    """Add a stage an organizer invented; the six canonical ones already exist."""
+    event = _event_scope(req)
+    stage_id = eventadmin.add_stage(event, req.form, _actor(req.user))
+    audit.record(action="stage.added", entity_type="stage", entity_id=stage_id,
+                 summary="Added a stage to %s" % event["name"], request=req,
+                 after={"name": req.field("name", "")[:80]})
+    return _redirect_done(_manage_path(event, "/stages"), "stage-added",
+                          req.field("name", "")[:80])
+
+
+def handle_event_stage_remove(req: http.Request) -> http.Response:
+    """Remove a stage. The event's own windows are never touched by this."""
+    event = _event_scope(req)
+    name = eventadmin.remove_stage(event, req.field("stage_id", ""))
+    audit.record(action="stage.removed", entity_type="event", entity_id=event["id"],
+                 summary="Removed the %s stage from %s" % (name, event["name"]),
+                 request=req, before={"name": name})
+    return _redirect_done(_manage_path(event, "/stages"), "stage-removed", name)
+
+
+def handle_event_teams(req: http.Request) -> http.Response:
+    """Who is competing in one hackathon, team by team."""
+    event = _event_scope(req)
+    teams, members_by_team = _event_teams(event)
+    body = event_roster_page(event=event, teams=teams, members_by_team=members_by_team)
+    return http.Response.html(render_shell(
+        title="Teams", content=body, user=req.user, current_path="/organizer",
+        csrf_token=_csrf(req), event=event))
+
+
+def handle_event_submissions(req: http.Request) -> http.Response:
+    """Every submission this hackathon holds, superseded copies included."""
+    event = _event_scope(req)
+    projects = _decorate_projects(db.query(
+        PROJECT_SELECT + " WHERE p.event_id = ? ORDER BY p.title ASC", (event["id"],)))
+    body = submissions_list(projects=projects, event=event)
+    return http.Response.html(render_shell(
+        title="Submissions", content=body, user=req.user, current_path="/organizer",
+        csrf_token=_csrf(req), event=event))
+
+
+def handle_event_judges(req: http.Request) -> http.Response:
+    """This event's judge roster and the invitations behind it."""
+    event = _event_scope(req)
+    invitations = db.dicts(db.query(
+        """SELECT * FROM judge_invitations WHERE event_id = ?
+            ORDER BY created_at DESC""", (event["id"],)))
+    body = event_judges_page(event=event, judges=_event_judges(event),
+                             invitations=invitations, csrf_token=_csrf(req))
+    return http.Response.html(render_shell(
+        title="Judges", content=body, user=req.user, current_path="/organizer",
+        csrf_token=_csrf(req), event=event, notice=_done_note(req)))
+
+
+def handle_event_judge_invite(req: http.Request) -> http.Response:
+    """Put a judge on this event's roster, creating the login when needed."""
+    event = _event_scope(req)
+    invited = eventadmin.invite_judge(event, req.form, _actor(req.user))
+    audit.record(action="judge.invited", entity_type="event", entity_id=event["id"],
+                 summary="Invited %s to judge %s" % (invited["name"], event["name"]),
+                 request=req, after={"email": invited["email"],
+                                     "account_created": invited["created"]})
+    return _redirect_done(_manage_path(event, "/judges"), "judge-invited",
+                          invited["name"])
+
+
+def handle_event_assignments(req: http.Request) -> http.Response:
+    """Hand work out inside one hackathon, and see what is still unscored."""
+    event = _event_scope(req)
+    projects = _decorate_projects(db.query(
+        PROJECT_SELECT + """ WHERE p.event_id = ? AND p.status = 'submitted'
+                             AND p.duplicate_of IS NULL ORDER BY p.title ASC""",
+        (event["id"],)))
+    body = event_assignments_page(event=event, projects=projects,
+                                  judges=_event_judges(event),
+                                  assignments=_event_assignments(event),
+                                  csrf_token=_csrf(req))
+    return http.Response.html(render_shell(
+        title="Assignments", content=body, user=req.user, current_path="/organizer",
+        csrf_token=_csrf(req), event=event, notice=_done_note(req)))
+
+
+def handle_event_assign(req: http.Request) -> http.Response:
+    """Assign one submission to one judge -- both from this event."""
+    event = _event_scope(req)
+    assignment = eventadmin.assign_project(event, req.form, _actor(req.user))
+    audit.record(action="assignment.created", entity_type="assignment",
+                 entity_id=assignment["assignment_id"],
+                 summary="Assigned %s to %s" % (assignment["project_title"],
+                                                assignment["judge_name"]),
+                 request=req, after={"judge_id": assignment["judge_id"]})
+    return _redirect_done(_manage_path(event, "/assignments"), "assigned",
+                          "%s to %s" % (assignment["project_title"],
+                                        assignment["judge_name"]))
+
+
+def handle_event_unassign(req: http.Request) -> http.Response:
+    """Revoke an assignment without deleting the row that recorded it."""
+    event = _event_scope(req)
+    revoked = eventadmin.revoke_assignment(event, req.form, _actor(req.user))
+    audit.record(action="assignment.revoked", entity_type="event",
+                 entity_id=event["id"],
+                 summary="Revoked %s from %s" % (revoked["project_title"],
+                                                 revoked["judge_name"]),
+                 request=req)
+    return _redirect_done(_manage_path(event, "/assignments"), "revoked",
+                          "%s from %s" % (revoked["project_title"],
+                                          revoked["judge_name"]))
+
+
+def handle_event_reviews(req: http.Request) -> http.Response:
+    """Every review recorded against this event, with its normalized score."""
+    event = _event_scope(req)
+    body = event_reviews_page(event=event, reviews=_event_reviews(event))
+    return http.Response.html(render_shell(
+        title="Reviews", content=body, user=req.user, current_path="/organizer",
+        csrf_token=_csrf(req), event=event))
+
+
+def handle_event_results_page(req: http.Request) -> http.Response:
+    """This event's standings as its organizers see them, plus the publish switch."""
+    event = _event_scope(req)
+    publication = events_mod.results_published(event)
+    ranked = ([_published_row(item, index) for index, item in enumerate(
+                   results_mod.publication_rows(publication), start=1)]
+              if publication is not None
+              else [_live_row(project) for project in scoring.scoreboard(event)["ranked"]])
+    body = event_results_page(event=event, ranked=ranked,
+                             is_published=publication is not None,
+                             publication=publication, csrf_token=_csrf(req),
+                             user_role=req.user["role"])
+    return http.Response.html(render_shell(
+        title="Results", content=body, user=req.user, current_path="/organizer",
+        csrf_token=_csrf(req), event=event, notice=_done_note(req)))
+
+
+def handle_event_publish(req: http.Request) -> http.Response:
+    """Freeze this hackathon's standings as a new revision, and certify them."""
+    event = _event_scope(req)
+    if event["status"] == "draft":
+        raise http.Problem(403, "event_not_published",
+                           "Publish the hackathon before releasing its results.",
+                           "A draft event is invisible, so the ledger would have "
+                           "no readers.")
+    note = req.field("note", "").strip() or ("Released by %s from the management page."
+                                             % req.user["name"])
+    publication = results_mod.publish(event, actor=_actor(req.user), note=note,
+                                      board=scoring.scoreboard(event))
+    certificates = results_mod.issue_certificates(event, actor=_actor(req.user))
+    audit.record(action="results.published", entity_type="event", entity_id=event["id"],
+                 summary="Published revision %d for %s" % (publication["revision"],
+                                                           event["name"]),
+                 request=req, after={"revision": publication["revision"],
+                                     "certificates": len(certificates)})
+    return _redirect_done(_manage_path(event, "/results"), "published",
+                          str(publication["revision"]))
+
+
+def handle_event_audit(req: http.Request) -> http.Response:
+    """This hackathon's slice of the append-only log."""
+    event = _event_scope(req)
+    page = _page_number(req)
+    records, total_pages = _event_audit(event, page=page)
+    body = audit_trail(records=records, page=min(page, total_pages),
+                       total_pages=total_pages,
+                       base_url=_manage_path(event, "/audit"), event=event)
+    return http.Response.html(render_shell(
+        title="Audit Trail", content=body, user=req.user, current_path="/organizer",
+        csrf_token=_csrf(req), event=event))
+
+
+def handle_event_settings(req: http.Request) -> http.Response:
+    """The settings form for one hackathon, plus who else organizes it."""
+    event = _event_scope(req)
+    return _event_settings_response(req, event, eventadmin.form_from_event(event), {})
+
+
+def handle_event_settings_save(req: http.Request) -> http.Response:
+    """Validate a settings edit, then apply it to this event and nothing else."""
+    event = _event_scope(req)
+    values, errors = eventadmin.validate(req.form, event=event)
+    if errors:
+        audit.refused(req, "event.update_refused",
+                      "Refused to save %s: %s" % (event["id"], ", ".join(sorted(errors))),
+                      entity_type="event", entity_id=event["id"])
+        return _event_settings_response(req, event, dict(req.form), errors)
+
+    eventadmin.update(event, values, _actor(req.user))
+    audit.record(action="event.updated", entity_type="event", entity_id=event["id"],
+                 summary="Saved the settings for %s" % values["name"], request=req,
+                 after={"slug": values["slug"], "status": values["status"],
+                        "tracks": len(values["tracks"]),
+                        "criteria": len(values["criteria"])})
+    return _redirect_done(_manage_path(event, "/settings"), "saved")
+
+
+def _event_settings_response(req: http.Request, event: dict, values: dict,
+                             errors: dict) -> http.Response:
+    """Render the settings form; a refused save keeps every value that was typed."""
+    body = event_settings_page(event=event, values=values, errors=errors,
+                               csrf_token=_csrf(req),
+                               organizers=events_mod.organizers_of(event["id"]))
+    return http.Response.html(
+        render_shell(title="Settings", content=body, user=req.user,
+                     current_path="/organizer", csrf_token=_csrf(req), event=event,
+                     notice=_done_note(req),
+                     error=("Nothing was saved: %d field%s need attention."
+                            % (len(errors), "" if len(errors) == 1 else "s"))
+                           if errors else None),
+        status=400 if errors else 200)
+
+
+def handle_event_organizer_add(req: http.Request) -> http.Response:
+    """Add an organizer to this hackathon's roster."""
+    event = _event_scope(req)
+    added = eventadmin.add_organizer(event, req.form, _actor(req.user))
+    audit.record(action="organizer.added", entity_type="event", entity_id=event["id"],
+                 summary="Added %s as an organizer of %s" % (added["name"],
+                                                             event["name"]),
+                 request=req, after={"user_id": added["user_id"],
+                                     "account_created": added["created"]})
+    return _redirect_done(_manage_path(event, "/settings"), "organizer-added",
+                          added["name"])
+
+
+def handle_event_organizer_remove(req: http.Request) -> http.Response:
+    """Remove an organizer's access to this event, never the last one."""
+    event = _event_scope(req)
+    name = eventadmin.remove_organizer(event, req.field("user_id", ""))
+    audit.record(action="organizer.removed", entity_type="event", entity_id=event["id"],
+                 summary="Removed %s from the organizers of %s" % (name, event["name"]),
+                 request=req, before={"user_id": req.field("user_id", "")})
+    return _redirect_done(_manage_path(event, "/settings"), "organizer-removed", name)
 
 
 # --- API and acceptance endpoints -------------------------------------------
@@ -1100,6 +1756,14 @@ def handle_api_judge_scores(req: http.Request) -> http.Response:
                                "Requested judge: %s." % requested)
         target_judge_id = caller["id"]
     elif caller["role"] in ("organizer", "admin"):
+        if not events_mod.can_manage(caller, event):
+            audit.refused(req, "event.manage_refused",
+                          "%s asked for the evaluation scores of %s"
+                          % (caller["email"], event["id"]),
+                          entity_type="event", entity_id=event["id"])
+            raise http.Problem(403, "not_your_event",
+                               "You do not manage that hackathon.",
+                               "Evaluation data is scoped to the events you run.")
         if requested:
             row = db.one("""SELECT id FROM users
                              WHERE id = ? OR fixture_id = ? OR email = ? COLLATE NOCASE""",
@@ -1138,10 +1802,24 @@ def handle_api_judge_scores(req: http.Request) -> http.Response:
 
 
 def handle_api_export_csv(req: http.Request) -> http.Response:
-    """Standings as CSV. Published rows when a publication exists, live otherwise."""
-    event = _event_row(events_mod.primary_event())
+    """Standings as CSV. Published rows when a publication exists, live otherwise.
+
+    `?event=<id or slug>` exports a particular hackathon; without it the primary
+    event is used, which is the one `.dogfood.toml` points at. Either way the
+    caller has to manage the event they are asking to export.
+    """
+    reference = req.q("event", "").strip()
+    event = (_event_row(events_mod.require_event(reference)) if reference
+             else _event_row(events_mod.primary_event()))
     if event is None:
         raise http.Problem(404, "no_events", "No event exists in this portal yet.")
+    if not events_mod.can_manage(req.user, event):
+        audit.refused(req, "event.manage_refused",
+                      "%s asked to export %s" % (req.user["email"], event["id"]),
+                      entity_type="event", entity_id=event["id"])
+        raise http.Problem(403, "not_your_event",
+                           "You do not manage that hackathon.",
+                           "Standings are exported one event at a time.")
 
     publication = events_mod.results_published(event)
     if publication is not None:
