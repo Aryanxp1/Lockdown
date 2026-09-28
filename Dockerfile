@@ -32,9 +32,10 @@ RUN addgroup -S portal \
 WORKDIR /app
 
 # The portal package plus the official fixture data it seeds itself from.
-# run.py and .dogfood.toml come along so the acceptance suite can be run from
-# inside the container against http://localhost:8081 without a host install.
+# run.py, .dogfood.toml and tests/ come along so the acceptance suite and the
+# unittest suites can be run from inside the container without a host install.
 COPY --chown=portal:portal app/ ./app/
+COPY --chown=portal:portal tests/ ./tests/
 COPY --chown=portal:portal fixtures.json run.py .dogfood.toml ./
 
 VOLUME ["/data"]
