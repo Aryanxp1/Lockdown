@@ -26,7 +26,13 @@ def main(argv=None) -> int:
     parser.add_argument("--quiet", action="store_true", help="do not print the login banner")
     args = parser.parse_args(argv)
 
-    db.init_db()
+    migration = db.init_db()
+    if migration.get("changed"):
+        print("[boot] schema migrated %d -> %d (%s)" % (
+            migration["from"], migration["to"],
+            ", ".join(migration["added"]) or "tables only"), flush=True)
+        if migration.get("created"):
+            print("[boot] ensured: %s" % ", ".join(migration["created"]), flush=True)
     result = boot.seed(force=args.reset, quiet=args.quiet)
     if result.get("seeded"):
         summary = result.get("summary", {})

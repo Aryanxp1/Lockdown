@@ -140,12 +140,18 @@ def update(table: str, values: dict, where: str, params=()) -> int:
 
 # --- schema -------------------------------------------------------------
 
-def init_db() -> None:
+def init_db() -> dict:
+    """Apply the schema, then any migration an older database still needs.
+
+    Returns the migration report so `python -m app` can say what it changed.
+    """
+    from . import migrations
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     schema = (config.APP_DIR / "schema.sql").read_text(encoding="utf-8")
     database = conn()
     with _write_lock:
         database.executescript(schema)
+        return migrations.migrate(database)
 
 
 def json_text(value) -> str:
