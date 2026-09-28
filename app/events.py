@@ -11,7 +11,7 @@ while the API refuses a submission for another reason: both read
 
 from __future__ import annotations
 
-from . import db, http, timeutil
+from . import db, http, timeutil, util
 
 STAGE_SEQUENCE = (
     ("registration", "Registration", "Accounts open. Teams may be created.",
@@ -52,6 +52,143 @@ def list_events(*, include_drafts: bool = False, limit: int = 50):
     clause = "" if include_drafts else "WHERE status != 'draft'"
     return db.query("SELECT * FROM events %s ORDER BY seq ASC, created_at ASC LIMIT ?"
                     % clause, (limit,))
+
+
+# --- event membership: who may manage which hackathon --------------------
+#
+# `events.created_by` records the founder. `event_organizers` records everyone
+# trusted with the event afterwards. Admin bypasses both. Nothing in the
+# frontend decides this: every organizer handler calls `require_manage` before
+# it reads or writes an event-scoped row, so a hand-edited URL or a forged
+# `event=` parameter cannot reach another hackathon's data.
+
+COVER_TONES = ("ink", "red", "blue", "green", "amber")
+
+
+def organizers_of(event_id: str) -> list[dict]:
+    return db.dicts(db.query(
+        """SELECT eo.*, u.name, u.email, u.role AS user_role
+             FROM event_organizers eo
+             JOIN users u ON u.id = eo.user_id
+            WHERE eo.event_id = ? ORDER BY eo.role DESC, u.name ASC""", (event_id,)))
+
+
+def add_organizer(event_id: str, user_id: str, *, role: str = "organizer",
+                  added_by: str | None = None) -> bool:
+    """Idempotent: re-adding the same person is not an error."""
+    if not user_id:
+        return False
+    if db.exists("SELECT id FROM event_organizers WHERE event_id = ? AND user_id = ?",
+                 (event_id, user_id)):
+        return False
+    db.insert("event_organizers", {
+        "id": util.new_id("evo"), "event_id": event_id, "user_id": user_id,
+        "role": role if role in ("owner", "organizer") else "organizer",
+        "added_by": added_by, "added_at": timeutil.now_iso()})
+    return True
+
+
+def member_role(user, event):
+    """'owner' | 'organizer' | '' for this user in this event."""
+    if not user or event is None:
+        return ""
+    row = db.one("SELECT role FROM event_organizers WHERE event_id = ? AND user_id = ?",
+                 (event["id"], user["id"]))
+    if row is not None:
+        return row["role"]
+    if event["created_by"] and event["created_by"] == user["id"]:
+        return "owner"
+    return ""
+
+
+def can_manage(user, event) -> bool:
+    """Admin manages everything; an organizer manages the events they belong to."""
+    if user is None or event is None:
+        return False
+    if user["role"] == "admin":
+        return True
+    if user["role"] != "organizer":
+        return False
+    return bool(member_role(user, event))
+
+
+def manageable_events(user, *, include_archived: bool = True) -> list[dict]:
+    """The hackathons this user may operate, oldest first. Empty for everyone else."""
+    if user is None:
+        return []
+    if user["role"] == "admin":
+        rows = list_events(include_drafts=True, limit=200)
+    elif user["role"] == "organizer":
+        rows = db.query(
+            """SELECT e.* FROM events e
+                LEFT JOIN event_organizers eo
+                       ON eo.event_id = e.id AND eo.user_id = ?
+               WHERE e.created_by = ? OR eo.user_id = ?
+               ORDER BY e.seq ASC, e.created_at ASC""",
+            (user["id"], user["id"], user["id"]))
+    else:
+        return []
+    events = [dict(row) for row in rows]
+    if not include_archived:
+        events = [item for item in events if item["status"] != "archived"]
+    return events
+
+
+def visible_events(*, include_drafts: bool = False, limit: int = 100) -> list[dict]:
+    """Events the public may see: published (or archived once something is final)."""
+    clause = "" if include_drafts else "WHERE status IN ('published','archived')"
+    return db.dicts(db.query(
+        "SELECT * FROM events %s ORDER BY seq ASC, created_at ASC LIMIT ?" % clause,
+        (limit,)))
+
+
+def event_metrics(event) -> dict:
+    """One event's headline numbers, for the directory and the management board.
+
+    Every count is filtered by `event_id`, so two hackathons never share a row.
+    """
+    counts = event_counts(event["id"])
+    submissions = counts["projects_submitted"]
+    reviews = counts["reviews_submitted"]
+    required = db.scalar(
+        "SELECT COALESCE(SUM(COALESCE(e.target_reviews, 3)), 0) FROM events e WHERE e.id = ?",
+        (event["id"],), 0) or 0
+    # Judging progress is measured against the work actually handed out, which is
+    # the number the organizer can act on.
+    judging_total = counts["assignments"] or 0
+    publication = results_published(event)
+    stage = current_stage(event)
+    return {
+        **counts,
+        "projects": submissions,
+        "stage": stage["name"] if stage else "",
+        "stage_key": stage["key"] if stage else "",
+        "stage_state": stage["state"] if stage else "",
+        "judging_total": judging_total,
+        "judging_done": reviews,
+        "judging_percent": round(100.0 * reviews / judging_total, 1) if judging_total else 0.0,
+        "target_reviews": required,
+        "results_published": publication is not None,
+        "results_revision": (publication or {}).get("revision_no") or 0,
+        "results_at": (publication or {}).get("published_at") or event["results_publish_at"],
+        "organizers": db.scalar(
+            "SELECT COUNT(*) FROM event_organizers WHERE event_id = ?", (event["id"],), 0),
+    }
+
+
+def cover_tone(event) -> str:
+    tone = (event.get("cover_tone") or "ink").strip().lower()
+    return tone if tone in COVER_TONES else "ink"
+
+
+def gallery_is_visible(event) -> bool:
+    return bool(event) and event["status"] in ("published", "archived") \
+        and bool(event.get("gallery_visible", 1))
+
+
+def results_are_visible(event) -> bool:
+    return bool(event) and event["status"] in ("published", "archived") \
+        and bool(event.get("results_visible", 1))
 
 
 def default_event_for(user=None, requested: str = ""):

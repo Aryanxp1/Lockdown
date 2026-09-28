@@ -72,9 +72,15 @@ DEMO_ACCOUNTS = (
 )
 
 # Extra logins that are useful when exploring the portal by hand.
+#
+# `organizer_b` deliberately manages no hackathon: it is the account the
+# isolation tests use to prove that an organizer cannot reach an event they were
+# never added to (see tests/test_event_isolation.py).
 EXTRA_DEMO_ACCOUNTS = (
     ("judge_c", "priya.nair@example.org", "Priya Nair", "judge", "sess_jdg_c_12ab78fe"),
     ("participant_2", "member1_1@example.org", "Ines Falk", "participant", "sess_prt_9d4c1b02"),
+    ("organizer_b", "nadia.frost@dogfood.test", "Nadia Frost", "organizer",
+     "sess_org_b_7c31de84"),
 )
 
 RUBRIC_DEFAULT = (

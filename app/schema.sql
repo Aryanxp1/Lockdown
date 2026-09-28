@@ -54,6 +54,10 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
+-- The hackathon is the top-level entity: every team, project, assignment,
+-- review, vote, certificate and published result hangs off exactly one row
+-- here. One Lockdown install hosts many independent events; nothing is
+-- duplicated per event apart from the event's own configuration.
 CREATE TABLE IF NOT EXISTS events (
   id                   TEXT PRIMARY KEY,
   slug                 TEXT NOT NULL UNIQUE,
@@ -61,9 +65,14 @@ CREATE TABLE IF NOT EXISTS events (
   tagline              TEXT NOT NULL DEFAULT '',
   description          TEXT NOT NULL DEFAULT '',
   rules                TEXT NOT NULL DEFAULT '',
+  banner               TEXT NOT NULL DEFAULT '',
+  cover_tone           TEXT NOT NULL DEFAULT 'ink',
+  location             TEXT NOT NULL DEFAULT '',
   seq                  INTEGER NOT NULL DEFAULT 100,
   status               TEXT NOT NULL DEFAULT 'published'
                        CHECK (status IN ('draft','published','archived')),
+  gallery_visible      INTEGER NOT NULL DEFAULT 1,
+  results_visible      INTEGER NOT NULL DEFAULT 1,
   registration_open    TEXT,
   registration_close   TEXT,
   team_formation_close TEXT,
@@ -96,6 +105,21 @@ CREATE TABLE IF NOT EXISTS event_stages (
   UNIQUE (event_id, key)
 );
 CREATE INDEX IF NOT EXISTS idx_stages_event ON event_stages(event_id, seq);
+
+-- Which organizer may manage which hackathon. `events.created_by` records the
+-- founder; this table records everyone trusted with the event afterwards.
+-- Admin bypasses the table entirely (see app/events.py:can_manage).
+CREATE TABLE IF NOT EXISTS event_organizers (
+  id       TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  user_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role     TEXT NOT NULL DEFAULT 'organizer'
+           CHECK (role IN ('owner','organizer')),
+  added_by TEXT REFERENCES users(id),
+  added_at TEXT NOT NULL,
+  UNIQUE (event_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_event_organizers_user ON event_organizers(user_id);
 
 CREATE TABLE IF NOT EXISTS tracks (
   id          TEXT PRIMARY KEY,
@@ -454,4 +478,4 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   PRIMARY KEY (bucket, window_start)
 );
 
-INSERT OR IGNORE INTO schema_meta(key, value) VALUES ('schema_version', '1');
+INSERT OR IGNORE INTO schema_meta(key, value) VALUES ('schema_version', '2');
