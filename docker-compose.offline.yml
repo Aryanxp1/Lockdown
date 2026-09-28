@@ -1,0 +1,23 @@
+# Offline test overlay - proves the portal needs no network.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.offline.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.offline.yml \
+#       exec -T portal python3 run.py .dogfood.toml
+#   docker compose -f docker-compose.yml -f docker-compose.offline.yml down
+#
+# `internal: true` removes the gateway, so the container has no route off the
+# host: DNS fails, and so does TCP to any public address. Published ports are
+# reset because an internal network has no NAT to publish through, so the
+# portal is reached with `docker compose exec` instead.
+#
+# The database still comes from the same named volume, so running this does not
+# throw away the portal's state.
+services:
+  portal:
+    ports: !reset []
+    networks:
+      - offline
+
+networks:
+  offline:
+    internal: true
