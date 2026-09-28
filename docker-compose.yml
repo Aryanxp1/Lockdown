@@ -1,0 +1,64 @@
+# Lockdown competition portal - one command, no network, no hosted anything.
+#
+#   docker compose up              build if needed, seed, serve
+#   docker compose ps              health status
+#   docker compose down            keep the database
+#   docker compose down -v         throw the database away too
+#
+# Then, from another terminal on the host:
+#
+#   python3 run.py .dogfood.toml
+#
+# The portal is the Python standard library plus this repository: there is no
+# database server, no queue, no CDN and no API key. The build installs nothing,
+# and the running portal makes no outbound requests, so only the very first
+# build needs network access at all (to fetch the base image).
+#
+# Host port and bind address are parameterised so you never have to edit this
+# file: LOCKDOWN_PORT=9000 docker compose up
+name: lockdown-portal
+
+services:
+  portal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # Offline determinism: use the locally cached base image rather than
+      # asking the registry whether there is something newer.
+      pull: false
+    image: lockdown-portal:local
+    container_name: lockdown-portal
+    restart: unless-stopped
+    # The app seeds itself and binds 0.0.0.0:8081 inside the container; only
+    # the published port and the data directory are the operator's business.
+    environment:
+      PORTAL_HOST: "0.0.0.0"
+      PORTAL_PORT: "${LOCKDOWN_PORT:-8081}"
+      PORTAL_DATA_DIR: /data
+      PORTAL_FIXTURES: /app/fixtures.json
+      # Seed on boot when the database is empty; never wipe implicitly.
+      PORTAL_SEED: "1"
+      PORTAL_RESET: "0"
+    ports:
+      # Loopback by default: the acceptance checker runs on this host, and a
+      # demo portal should not appear on the LAN unless asked for.
+      - "${LOCKDOWN_BIND:-127.0.0.1}:${LOCKDOWN_PORT:-8081}:${LOCKDOWN_PORT:-8081}"
+    volumes:
+      # Named volume, not a bind mount: SQLite runs in WAL mode, and WAL on a
+      # Windows/OneDrive-mounted directory is exactly the kind of thing that
+      # corrupts a database.
+      - portal-data:/data
+    # Nothing in the image needs to write outside /data, and nothing needs a
+    # capability at all (it binds 8081, a non-privileged port).
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+
+volumes:
+  # Holds /data/portal.sqlite3 (+ WAL/SHM) and the persisted portal secret.
+  portal-data:
