@@ -1,0 +1,21 @@
+# Keep the build context small, and keep local state out of the image: the
+# database in ./data belongs to whoever ran the portal on this laptop.
+.git/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+data/
+data-test/
+tmp/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Not needed at runtime.
+spec.md
+README.md
+acceptance-report.txt
+Dockerfile
+docker-compose.yml
+docker-compose.offline.yml
+.dockerignore
