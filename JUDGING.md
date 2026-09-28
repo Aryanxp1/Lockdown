@@ -12,19 +12,34 @@ and the exact step-by-step arithmetic from a real evaluation in the dataset.
 ## 1. Rubric model & weighted raw scores
 
 ### Criteria configuration
-Events define an active rubric composed of weighted criteria (`app/scoring.py:58`).
-Weights are normalized so they sum to `1.0`:
+Events define an active rubric composed of weighted criteria (`app/scoring.py:54`).
+A rubric belongs to exactly one event — `rubrics.event_id` — and
+`scoring.criteria_for_event()` resolves it, so two hackathons in the same database
+can be scored on entirely different criteria. Weights are normalized so they sum
+to `1.0` (`app/scoring.py:72`):
 
 $$\text{effective\_weight}_i = \frac{w_i}{\sum_{k} w_k}$$
 
-The official 2026 hackathon rubric (`rub_default`) defines three criteria on an
-integer scale of 1 to 5:
+The Sample Hack 2026 rubric (`rub_default`, event `evt_01`) defines three criteria
+on an integer scale of 1 to 5:
 
 | Criterion | Key | Range | Raw Weight | Effective Weight |
 | --- | --- | :---: | :---: | :---: |
 | Functionality | `functionality` | 1..5 | 0.40 | 0.40 |
 | Build Quality | `quality` | 1..5 | 0.30 | 0.30 |
 | Innovation | `innovation` | 1..5 | 0.30 | 0.30 |
+
+For contrast, the Zero Dependency 2026 demo event runs its own rubric
+(`rub_zero_dep`, event `evt_zero_dep`):
+
+| Criterion | Key | Range | Raw Weight | Effective Weight |
+| --- | --- | :---: | :---: | :---: |
+| Does it actually work | `correctness` | 1..5 | 0.45 | 0.45 |
+| Simplicity | `simplicity` | 1..5 | 0.30 | 0.30 |
+| Documentation | `documentation` | 1..5 | 0.25 | 0.25 |
+
+Both rubrics sum to 1.0, and neither influences the other's scores: normalization
+baselines, rollups and rankings are all computed within a single `event_id`.
 
 ### Raw score formula
 A judge assigns integer ratings $v_i \in [1, 5]$. The weighted average on the
@@ -124,8 +139,10 @@ The review is assigned `normalized = 72.14` with `norm_method = 'zscore_judge'`.
 ## 4. Project rollup & ranking
 
 ### Scoreboard calculation
-`scoring.scoreboard(event)` (`app/scoring.py:317`) computes the final project
-standings:
+`scoring.scoreboard(event)` (`app/scoring.py:288`) computes the final project
+standings **for one event**. Every query it issues is scoped by that event's id
+(`scoring.load_reviews(event_id)`, `app/scoring.py:123`), so running it for
+`evt_01` cannot see `evt_zero_dep` rows and vice versa:
 1. **Normalized project mean:** Arithmetic mean of all normalized reviews
    submitted for the project.
 2. **Raw project mean:** Arithmetic mean of raw uncalibrated scores (stored for
@@ -138,7 +155,7 @@ standings:
    * Superseded duplicates (e.g. `prj_07` replaced by `prj_41`) are excluded.
 5. **Ranking order:** Projects are sorted primarily by `normalized_mean` descending.
 
-### Official event top 3 standings:
+### Sample Hack 2026 top 3 standings (event `evt_01`):
 | Rank | Project Title | Raw Mean | Normalized Mean | Reviews | Coverage | Flags |
 | :---: | --- | :---: | :---: | :---: | :---: | :---: |
 | **#1** | **Iron Switch** | 84.17 | **90.36** | 3 | 1.00 | None |
@@ -150,7 +167,10 @@ standings:
 
 ## 5. Review lifecycle & cryptographic integrity
 
-1. **Assignment:** Organizers pair judges to submissions in `assignments`.
+1. **Assignment:** Organizers pair judges to submissions in `assignments`, which is
+   scoped by `event_id`. A judge's assignment list (`events.assignments_for_judge()`,
+   `app/events.py:404`) is therefore per event, and `GET /api/judge/scores` only ever
+   returns the caller's own rows for the event in question.
 2. **Drafting & Autosave:** Judges enter ratings. Partial progress is saved as
    `draft` in `reviews` and appends a snapshot to `review_revisions`.
 3. **Submission & Normalization:** When submitted:
@@ -167,10 +187,17 @@ standings:
 * **Embargo rules:** Individual evaluation scores, rankings, and judge identities
   remain hidden from participants and the public while judging is open or until
   an organizer explicitly publishes results.
-* **Publication freeze (`result_publications`):** When published via
-  `POST /organizer/publish`, the current leaderboard is written into a
-  frozen JSON snapshot along with an immutable SHA-256 checksum.
+* **Per-event scope:** Publication is scoped to one hackathon.
+  `POST /organizer/events/{event_id}/results` (and the `/organizer/publish`
+  shortcut) writes a snapshot for that event alone, so publishing Winter War Room
+  2026 does not touch Sample Hack 2026's frozen standings. A publication row
+  always carries its own `event_id`.
+* **Publication freeze (`result_publications`):** When published, the current
+  leaderboard is written into a frozen JSON snapshot along with an immutable
+  SHA-256 checksum.
 * **CSV Exports:** The CSV endpoint (`GET /api/export.csv`) serves the frozen
-  snapshot if one exists, ensuring published rankings remain stable even if
-  underlying data changes.
+  snapshot for the event the organizer is working in, ensuring published rankings
+  remain stable even if underlying data changes.
+* **Visibility switch:** `events.results_visible` can hide a published results page
+  without deleting the snapshot. Organizers keep access; the public sees nothing.
 

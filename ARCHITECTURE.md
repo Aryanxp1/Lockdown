@@ -27,10 +27,14 @@ Three constraints shape every other decision:
 ```
 python -m app
    │
-   ├── db.init_db()            app/db.py:143     apply schema.sql (idempotent)
-   ├── boot.seed()             app/boot.py:351   seed fixtures + practice event + demo logins
-   └── server.serve()          app/server.py:258 ThreadingHTTPServer.serve_forever()
+   ├── db.init_db()            app/db.py:143     apply schema.sql, then migrations.migrate()
+   ├── boot.seed()             app/boot.py:674   seed fixtures + practice + demo events + logins
+   └── server.serve()          app/server.py:260 ThreadingHTTPServer.serve_forever()
 ```
+
+`db.init_db()` always runs `app/schema.sql` first and `migrations.migrate()` second
+(`app/db.py:154`). `schema.sql` describes a *new* database; the migration pass brings
+an *existing* one forward. Both are idempotent, so boot order never matters.
 
 * **One process, many threads.** `ThreadingHTTPServer` with `daemon_threads`.
   One thread handles one request from socket to response. No background jobs,
@@ -54,15 +58,19 @@ python -m app
 | --- | --- | --- |
 | `app/__main__.py` | CLI parsing, startup coordination | `main()` |
 | `app/config.py` | Environment configuration & defaults | `HOST`, `PORT`, `DATA_DIR`, … |
-| `app/schema.sql` | 30 SQLite tables + indexes | Applied at boot |
+| `app/schema.sql` | 31 SQLite tables + indexes (schema version 2) | Applied at boot |
 | `app/db.py` | SQLite connection pooling & tx helpers | `query`, `one`, `insert`, `tx` |
+| `app/migrations.py` | Additive, idempotent upgrades for older databases | `migrate`, `SCHEMA_VERSION` |
 | `app/http.py` | `Request`, `Response`, `Problem`, `Router` | `match`, `field`, `json` |
 | `app/server.py` | HTTP pipeline, static dispatch, guards | `handle_request`, guards |
-| `app/routes.py` | Route declarations (31 endpoints) | `build_routes()` |
+| `app/routes.py` | Route declarations (56 endpoints) | `build_routes()` |
 | `app/views/` | HTML view rendering & shell layout | `render_shell`, pages_* |
+| `app/views/pages_events.py` | Public event directory, event cover page, per-event gallery & results | `event_directory`, `event_page` |
+| `app/views/pages_manage.py` | The shelf of hackathons and one event's management desk | `manage_home`, `event_overview` |
 | `app/auth.py` | Sessions, cookies, role checks | `resolve`, `start`, `end` |
 | `app/security.py` | Cryptographic primitives | `hash_password`, `sign` |
-| `app/events.py` | Event lifecycles, windows, deadlines | `submission_window` |
+| `app/events.py` | Event lifecycles, windows, deadlines, **membership** | `submission_window`, `can_manage` |
+| `app/eventadmin.py` | Creating and configuring hackathons, validating forms | `validate`, `create`, `update` |
 | `app/scoring.py` | Rubrics, z-scores, rollups | `scoreboard`, `normalize` |
 | `app/results.py` | Publications, certificates, advancements | `publish`, `issue_certificates` |
 | `app/seed.py` | Fixture transformations | `seed_*`, `plan_assignments` |
@@ -91,17 +99,23 @@ python -m app
 
 ## 4. Route surface
 
-The portal registers 31 routes in `build_routes()` (`app/routes.py:46`). Each route explicitly declares allowed roles and CSRF requirements:
+The portal registers 56 routes in `build_routes()` (`app/routes.py:59`) — 36 GET and
+20 POST. Each route explicitly declares allowed roles and CSRF requirements:
 
 | Area | Endpoints | Access |
 | --- | --- | --- |
 | **Public** | `GET /`<br>`GET /gallery`, `GET /projects` (alias)<br>`GET /gallery/{project_id}`<br>`GET /results` | Public |
+| **Event directory** | `GET /events`<br>`GET /events/{slug}`<br>`GET /events/{slug}/gallery`<br>`GET /events/{slug}/results` | Public |
 | **Auth** | `GET /signin`, `GET /login`<br>`POST /signin` (public, CSRF bypassed)<br>`POST /signout` | Public / Authenticated |
 | **Community** | `POST /gallery/{project_id}/vote`<br>`POST /gallery/{project_id}/comment` | Any role, CSRF |
 | **Participant** | `GET /participant`<br>`POST /participant/team/create`<br>`GET /participant/project/new`, `GET /projects/new`<br>`POST /participant/project/new`, `POST /projects/new`<br>`GET /participant/project/edit`<br>`POST /participant/project/edit` | `participant`, `admin`<br>CSRF on POST |
 | **Judge** | `GET /judge`<br>`GET /judge/assignments`<br>`GET /judge/evaluate/{project_id}`<br>`POST /judge/evaluate/{project_id}` | `judge`, `admin`<br>CSRF on POST |
-| **Organizer** | `GET /organizer`<br>`GET /organizer/submissions`<br>`GET /organizer/judges`<br>`GET /organizer/audit`<br>`POST /organizer/publish` | `organizer`, `admin`<br>CSRF on POST |
+| **Organizer — shelf** | `GET /organizer`<br>`GET\|POST /organizer/events/new`<br>`GET /organizer/submissions`<br>`GET /organizer/judges`<br>`GET /organizer/audit`<br>`POST /organizer/publish`<br>`GET /organizer/export` | `organizer`, `admin`<br>CSRF on POST |
+| **Organizer — one event** | `GET /organizer/events/{event_id}`<br>`GET\|POST /organizer/events/{event_id}/stages`<br>`POST /organizer/events/{event_id}/stages/remove`<br>`GET /organizer/events/{event_id}/teams`<br>`GET /organizer/events/{event_id}/submissions`<br>`GET\|POST /organizer/events/{event_id}/judges`<br>`GET\|POST /organizer/events/{event_id}/assignments`<br>`POST /organizer/events/{event_id}/assignments/revoke`<br>`GET /organizer/events/{event_id}/reviews`<br>`GET\|POST /organizer/events/{event_id}/results`<br>`GET /organizer/events/{event_id}/audit`<br>`GET\|POST /organizer/events/{event_id}/settings`<br>`POST /organizer/events/{event_id}/organizers`<br>`POST /organizer/events/{event_id}/organizers/remove` | `organizer`, `admin`<br>CSRF on POST<br>**plus** `events.can_manage` |
 | **API** | `GET /api/judge/scores`<br>`GET /api/export.csv`, `GET /organizer/export` | Authenticated / Organizer |
+
+Every route matching `/organizer/events/{event_id}/...` resolves the event and calls
+`events.can_manage()` before touching a row; the URL alone grants nothing.
 
 ---
 
@@ -131,32 +145,99 @@ The portal uses server-side template-less string rendering:
 
 ---
 
-## 7. Persistence & Docker deployment
+## 7. Multi-hackathon & event isolation
+
+One install is a **shelf of hackathons**, not a single competition. Three seeded
+events share one database:
+
+| Event | id | slug | Contents |
+| --- | --- | --- | --- |
+| Sample Hack 2026 | `evt_01` | `sample-hack-2026` | The full fixture: 41 projects, 40 teams, 126 reviews, published results |
+| Autumn Practice Sprint | `evt_practice` | `autumn-practice-sprint` | Small sandbox event for trying flows |
+| Zero Dependency 2026 | `evt_zero_dep` | `zero-dependency-2026` | Second demo event: own tracks, prizes and rubric |
+
+### How a row belongs to an event
+
+Ownership is explicit, never inferred. `events.id` is the scope key and is carried
+as an `event_id` foreign key on every table that describes a competition:
+`event_stages`, `tracks`, `prizes`, `teams`, `projects`, `assignments`, `reviews`,
+`rubrics`, `advancements`, plus `event_organizers` (the membership table).
+`review_scores` and `team_members` reach their event through their parent row and
+therefore have no column of their own.
+
+### Membership decides access
+
+Role alone is no longer sufficient. `event_organizers` maps `(event_id, user_id)`
+with a role of `owner` or `organizer`, and `events.can_manage()` (`app/events.py:104`)
+is the single check every organizer route makes. `events.manageable_events()`
+(`app/events.py:115`) backs the shelf on `GET /organizer`, so an organizer sees
+exactly the hackathons they belong to. `events.member_role()` distinguishes the two
+tiers, and `eventadmin` writes the membership row inside the same transaction that
+creates the event, so a hackathon is never ownerless.
+
+### Visibility is a switch, not a deletion
+
+`events.gallery_visible` and `events.results_visible` hide a hackathon's public
+surfaces without destroying anything. `events.gallery_is_visible()` and
+`events.results_are_visible()` (`app/events.py:184`, `app/events.py:189`) gate the
+public pages; organizers keep full access through the management desk. Draft events
+are excluded from the public directory by `events.visible_events()`
+(`app/events.py:137`).
+
+### Migration strategy
+
+Event scoping was added to a database that already held live data, so it ships as a
+migration rather than a rewrite (`app/migrations.py`, `SCHEMA_VERSION = 2`):
+
+* **Additive only.** `ADDED_COLUMNS` lists each new defaulted column; the pass runs
+  `ALTER TABLE ... ADD COLUMN` only when `PRAGMA table_info` says it is missing.
+  `EXTRA_STATEMENTS` creates `event_organizers` and the new indexes with
+  `IF NOT EXISTS`.
+* **No invented data.** A table that is absent is skipped, not recreated — a
+  stripped-down database is upgraded, never fabricated.
+* **Existing rows are re-homed.** Every pre-migration project, team and review
+  belongs to Sample Hack 2026, so the fixture's rows keep working untouched.
+* **Idempotent.** Running it twice changes nothing, and `schema.sql` already
+  describes version 2, so a brand new database needs no migration at all.
+* **Loud on damage.** A missing *indexed* table raises rather than limping on,
+  because `schema.sql` runs first on every boot and its absence is a real fault.
+
+`tests/test_event_isolation.py` proves the boundary (a draft event is invisible,
+public pages never mix two hackathons, an outsider cannot borrow row ids from
+another event, every refusal lands in `audit_log`); `tests/test_migrations.py`
+proves the upgrade path.
+
+---
+
+## 8. Persistence & Docker deployment
 
 * **Single-file storage.** All tables reside in `data/portal.sqlite3`. With WAL mode enabled, SQLite generates temporary `-wal` and `-shm` files during operation.
 * **Docker container.** Runs with unprivileged `python:3.12-alpine`. The `lockdown-portal` service mounts a named Docker volume (`portal-data`) to `/data`. The service uses `PORTAL_DATA_DIR=/data` to keep database files safe across container restarts.
-* **Deterministic seeding.** Seeding occurs automatically if the database has zero registered events. The bootstrapper loads `data/fixtures.json`, initializes the practice event, pre-generates demo sessions, and issues initial publications.
+* **Deterministic seeding.** Seeding occurs automatically if the database has zero registered events. The bootstrapper loads `fixtures.json`, initializes the practice event and the Zero Dependency 2026 demo event, pre-generates demo sessions, records event ownership, and issues initial publications.
 * **Demo session permanence.** Demo sessions are injected with an expiration timestamp of `2099-01-01T00:00:00Z` (`app/config.py:74`), allowing test suites and judges to access accounts without re-authenticating.
 
 
 ---
 
-## 8. Security posture
+## 9. Security posture
 
 * **Session tokens.** High-entropy 32-byte hexadecimal strings generated with `secrets.token_hex(32)`. The database only stores SHA-256 hashes of tokens (`app/auth.py:46`).
 * **Cookies.** Emitted with `HttpOnly`, `SameSite=Lax`, `Path=/`, and a 30-day lifetime. Because Lockdown is designed to run over plain HTTP on LANs or loopback addresses, the `Secure` flag is omitted (`app/http.py:164`). For public networks, an external TLS-terminating reverse proxy is expected.
 * **CSRF protection.** Compares session-bound tokens using `hmac.compare_digest()`. The `/signin` POST endpoint intentionally skips CSRF validation because the client has no session prior to authenticating.
 * **Password hashing.** Uses standard library `hashlib.scrypt()` (16384 cost, 8 block size, 1 parallelization) with fallback to PBKDF2-SHA256 (120,000 iterations) (`app/security.py:27`).
 * **Evaluation integrity.** Review scores are signed with an HMAC-SHA256 digest computed from `review_id`, `project_id`, `judge_user_id`, `weighted_raw`, and the server secret (`app/security.py:68`).
+* **Cross-event authorisation.** A role guard alone is not enough to reach another tenant's data, so `events.can_manage()` re-checks membership on every event-scoped read and write. Row ids in URLs are therefore not a capability.
 * **Path traversal prevention.** Static asset requests reject `..`, absolute paths, and backslashes before checking that the resolved path is contained in the static directory (`app/server.py:242`).
 
 ---
 
-## 9. Verification & test suite
+## 10. Verification & test suite
 
 Verification tools included in the repository:
 
 * `run.py`: Acceptance test suite testing login flows, CSRF, judging, score normalization, public embargo enforcement, and certificate issuance.
 * `tmp/smoke.py`: End-to-end smoke verification executing complete judging lifecycles.
 * `tmp/doc_facts.py`: Real-time inspector validating table schemas, row counts, and rubric configurations directly against live database volumes.
+* `tests/test_event_isolation.py`: Multi-hackathon boundary — draft visibility, per-event public pages, cross-event write refusal, audit coverage (unittest).
+* `tests/test_migrations.py`: The version 1 → 2 upgrade path, idempotency, and "never invent a missing table" (unittest).
 

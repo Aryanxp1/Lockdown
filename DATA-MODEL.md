@@ -4,7 +4,7 @@ All persistent state in Lockdown is stored in a single SQLite database
 (`data/portal.sqlite3`) managed through `app/schema.sql` and `app/db.py`.
 There is no ORM; queries use explicit parameterised SQL.
 
-This document describes the schema conventions, the 30 tables, seed mappings,
+This document describes the schema conventions, the 31 tables, seed mappings,
 revision tracking, and snapshot publication formats.
 
 ---
@@ -21,46 +21,70 @@ revision tracking, and snapshot publication formats.
 * **Constraints:** `PRAGMA foreign_keys = ON` is applied on every database
   connection (`app/db.py:24`). Cascade deletes clean up child records when
   parent entities are removed.
+* **Event scoping:** `events.id` is the scope key. Every table that describes a
+  single competition carries an `event_id` foreign key, so a row is never shared
+  between two hackathons.
+
+### Schema version & migrations
+
+`schema_meta.schema_version` records the live schema version. `app/schema.sql`
+describes a *new* database and `app/migrations.py` upgrades an *existing* one;
+`db.init_db()` runs the script and then the migration pass on every boot
+(`app/db.py:154`). Version 2 is the multi-hackathon schema. Migrations are
+additive and idempotent: defaulted columns are added with
+`ALTER TABLE ... ADD COLUMN` only when absent, and tables/indexes are created with
+`IF NOT EXISTS`. A table missing from an old database is skipped rather than
+recreated, so the upgrade never invents data.
 
 ---
 
 ## 2. Table inventory & live volume counts
 
-The production database contains 30 tables. The row counts below were
-verified directly from the Docker container volume (`lockdown-portal_portal-data`):
+The schema contains 31 tables. The row counts below are from a freshly seeded
+database (`python -m app --reset --seed-only`), which is reproducible, and
+therefore include all three seeded events:
 
 | Domain | Table | Rows | Purpose |
 | --- | --- | ---: | --- |
-| **Identity** | `users` | 123 | Accounts across participant, judge, organizer, and admin roles |
-| | `sessions` | 7 | Active user sessions (including non-expiring demo tokens) |
+| **Identity** | `users` | 131 | Accounts across participant, judge, organizer, and admin roles |
+| | `sessions` | 8 | Active user sessions (including non-expiring demo tokens) |
 | | `settings` | 1 | Global configuration key-values (stores `portal_secret`) |
-| **Events** | `events` | 2 | Event definitions (`evt_01` official, `evt_practice` practice) |
-| | `event_stages` | 12 | Timeline stages per event (draft, registration, submission, judging, etc.) |
-| | `tracks` | 11 | Competition tracks (8 official fixtures + 3 practice) |
-| | `prizes` | 6 | Event award categories |
+| **Events** | `events` | 3 | Event definitions (`evt_01`, `evt_practice`, `evt_zero_dep`) |
+| | `event_stages` | 18 | Timeline stages per event (6 stages × 3 events) |
+| | `event_organizers` | 6 | Who may manage which hackathon (2 organizers × 3 events) |
+| | `tracks` | 16 | Competition tracks (8 official + 3 practice + 5 demo) |
+| | `prizes` | 9 | Event award categories (4 + 2 + 3) |
 | | `judge_invitations` | 0 | Pending judge email invitations |
-| **Projects** | `teams` | 43 | Participant teams (40 official + 3 practice) |
-| | `team_members` | 96 | Team membership and roles |
-| | `projects` | 44 | Project submissions (41 official + 3 practice) |
-| | `project_versions` | 44 | Append-only submission history snapshots |
-| **Judging** | `rubrics` | 2 | Active rubrics per event |
-| | `rubric_criteria` | 6 | Scoring criteria definitions with weights and score ranges |
-| | `assignments` | 138 | Judge-to-project assignment pairings |
-| | `reviews` | 127 | Submitted evaluations and active drafts |
-| | `review_scores` | 380 | Individual criterion score entries |
-| | `review_revisions` | 127 | Append-only evaluation score history |
+| **Projects** | `teams` | 47 | Participant teams (40 official + 3 practice + 4 demo) |
+| | `team_members` | 103 | Team membership and roles |
+| | `projects` | 48 | Project submissions (41 official + 3 practice + 4 demo) |
+| | `project_versions` | 48 | Append-only submission history snapshots |
+| **Judging** | `rubrics` | 3 | One active rubric per event |
+| | `rubric_criteria` | 9 | Scoring criteria with weights and score ranges (3 per rubric) |
+| | `assignments` | 142 | Judge-to-project assignment pairings |
+| | `reviews` | 129 | Submitted evaluations and active drafts |
+| | `review_scores` | 386 | Individual criterion score entries |
+| | `review_revisions` | 129 | Append-only evaluation score history |
 | | `pairwise_comparisons`| 6 | Head-to-head project comparisons |
-| **Results** | `result_publications`| 1 | Frozen public score snapshots with checksums |
+| **Results** | `result_publications`| 1 | Frozen public score snapshots with checksums (Sample Hack 2026 only) |
 | | `advancements` | 40 | Advancement decisions (8 advanced, 32 eliminated) |
 | | `certificates` | 40 | Cryptographic credential records (37 participation, 3 winner) |
-| **Community** | `comments` | 14 | Project feedback and discussion comments |
-| | `votes` | 117 | Community upvotes |
+| **Community** | `comments` | 17 | Project feedback and discussion comments |
+| | `votes` | 121 | Community upvotes |
 | | `vote_ballots` | 0 | Structured community voting ballots |
-| **Operations** | `audit_log` | 19 | Synchronous immutable security audit events |
+| **Operations** | `audit_log` | 4 | Synchronous immutable security audit events |
 | | `rate_limits` | 0 | IP and token request throttles |
 | | `webhooks` | 1 | Outbound event notification hooks |
 | | `webhook_deliveries`| 0 | Webhook dispatch attempts |
-| | `schema_meta` | 1 | Schema version tracking |
+| | `schema_meta` | 1 | Schema version tracking (`schema_version = 2`) |
+
+### Rows per event
+
+| Event | slug | tracks | prizes | stages | projects | assignments | reviews | publications |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Sample Hack 2026 (`evt_01`) | `sample-hack-2026` | 8 | 4 | 6 | 41 | 134 | 126 | 1 |
+| Autumn Practice Sprint (`evt_practice`) | `autumn-practice-sprint` | 3 | 2 | 6 | 3 | 4 | 1 | 0 |
+| Zero Dependency 2026 (`evt_zero_dep`) | `zero-dependency-2026` | 5 | 3 | 6 | 4 | 4 | 2 | 0 |
 
 ---
 
@@ -72,9 +96,11 @@ verified directly from the Docker container volume (`lockdown-portal_portal-data
 * **`settings`:** Key-value table. Stores `portal_secret`, the HMAC signing key generated during initial boot (`app/security.py:75`).
 
 ### Events, stages & assignments
-* **`events`:** Competition metadata (`evt_01`, `evt_practice`). Defines `slug`, `status` (`draft`, `published`), `target_reviews` (default 3), and deadline timestamps (`submissions_open`, `submissions_close`, `judging_open`, `judging_close`, `results_publish_at`).
-* **`event_stages`:** Tracks linear timeline states (`upcoming`, `active`, `past`).
-* **`assignments`:** Links `project_id` and `judge_user_id` with `status` (`assigned`, `accepted`, `declined`, `completed`). Fixture plan assignments have `origin='fixture_plan'`; scores-loaded assignments have `origin='fixture_scores'`.
+* **`events`:** Competition metadata (`evt_01`, `evt_practice`, `evt_zero_dep`). Defines `slug`, `status` (`draft`, `published`, `archived`), `target_reviews` (default 3), presentation fields (`banner`, `cover_tone`, `location`) and deadline timestamps (`submissions_open`, `submissions_close`, `judging_open`, `judging_close`, `results_publish_at`).
+  * *Public visibility:* `gallery_visible` and `results_visible` are switches that hide an event's public gallery or results page while keeping the data intact for its organizers. Drafts are excluded from the public directory entirely.
+* **`event_organizers`:** The membership table that makes access per-event. Maps `(event_id, user_id)` with `role` (`owner`, `organizer`), plus `added_by` and `added_at`. `UNIQUE (event_id, user_id)`. `events.can_manage()` reads this table on every organizer route, so holding the `organizer` role is necessary but not sufficient.
+* **`event_stages`:** Tracks linear timeline states (`upcoming`, `active`, `past`) per event.
+* **`assignments`:** Links `project_id` and `judge_user_id` with `status` (`assigned`, `accepted`, `declined`, `completed`). Scoped by `event_id`. Fixture plan assignments have `origin='fixture_plan'`; scores-loaded assignments have `origin='fixture_scores'`.
 
 ### Projects & submissions
 * **`projects`:** Core project submissions. Contains `event_id`, `team_id`, `track_id`, `title`, `summary`, `repo_url`, `status` (`draft`, `submitted`), and `submission_state` (`open`, `locked`).
@@ -82,12 +108,14 @@ verified directly from the Docker container volume (`lockdown-portal_portal-data
 * **`project_versions`:** Append-only history table. Every update or status change writes a new record with `version_no`, `snapshot` JSON, and `reason`.
 
 ### Rubrics, evaluations & scoring
-* **`rubrics` & `rubric_criteria`:** Rubric configurations. Official fixtures use 3 criteria:
+* **`rubrics` & `rubric_criteria`:** One active rubric per event, scoped by `rubrics.event_id`. Sample Hack 2026 uses the fixture's 3 criteria:
   * `functionality` (weight 0.40, range 1..5)
   * `quality` (weight 0.30, range 1..5)
   * `innovation` (weight 0.30, range 1..5)
-* **`reviews`:** Evaluation submissions. Stores `weighted_raw` (0–100 scale), `normalized` score, `norm_method` (`zscore_judge` or `raw_fallback`), `norm_flags` (e.g. `insufficient_sample`, `zero_variance`), and `signature` (HMAC-SHA256).
-* **`review_scores`:** Breakdown of criterion score values per review (`criterion_key`, `value`, `weight`).
+
+  Zero Dependency 2026 has its own rubric — `correctness` (0.45), `simplicity` (0.30), `documentation` (0.25) — proving criteria are per-event, not global.
+* **`reviews`:** Evaluation submissions, scoped by `event_id`. Stores `weighted_raw` (0–100 scale), `normalized` score, `norm_method` (`zscore_judge` or `raw_fallback`), `norm_flags` (e.g. `insufficient_sample`, `zero_variance`), and `signature` (HMAC-SHA256).
+* **`review_scores`:** Breakdown of criterion score values per review (`criterion_key`, `value`, `weight`). Reaches its event through `reviews.event_id`.
 * **`review_revisions`:** Append-only record of review score changes and autosave drafts.
 
 
@@ -145,9 +173,16 @@ The `audit_log` is an immutable append-only ledger (`app/audit.py:34`). Every en
 
 ## 6. Seed fixture mapping
 
-When initialized from `data/fixtures.json`:
+When initialized from `fixtures.json`:
 1. **Users & Teams:** Team participant emails are extracted and registered as `users` (`role='participant'`). 30 judges are created as `usr_jdg_01` through `usr_jdg_30`.
 2. **Duplicate Project Pairing:** Fixture project `prj_41` is wired as a replacement for `prj_07` (`prj_41.duplicate_of = 'prj_07'`, `prj_07.superseded_by = 'prj_41'`).
 3. **Practice Workspace:** Injects 3 practice projects (`prj_practice_field` as draft; `prj_practice_carto` and `prj_practice_kiln` as submitted) along with an active evaluation draft for demo judge testing.
-4. **Demo Sessions:** Pre-authorizes 7 demo logins (`demo:admin`, `demo:organizer`, `demo:judge_a`, `demo:judge_b`, `demo:judge_c`, `demo:participant`, `demo:participant_2`) with expiration timestamp set to `2099-01-01T00:00:00Z`.
+4. **Zero Dependency 2026 Demo Event:** A second, independently configured hackathon (`evt_zero_dep`, slug `zero-dependency-2026`) with 5 tracks, 3 prizes, its own 3-criteria rubric, 4 teams and 4 projects (`prj_zero_lantern`, `prj_zero_ledger`, `prj_zero_abacus` submitted; `prj_zero_saltflat` draft) and 2 submitted reviews. It exists to prove event isolation with real data rather than an empty shell.
+5. **Event Ownership:** `boot.seed_event_organizers()` (`app/boot.py:653`) inserts an `owner` row in `event_organizers` for each seeded event, so the demo organizers manage Sample Hack 2026, Autumn Practice Sprint and Zero Dependency 2026 from one shelf.
+6. **Demo Sessions:** Pre-authorizes 7 demo logins (`demo:admin`, `demo:organizer`, `demo:judge_a`, `demo:judge_b`, `demo:judge_c`, `demo:participant`, `demo:participant_2`) with expiration timestamp set to `2099-01-01T00:00:00Z`.
+
+Events created later through `POST /organizer/events/new` are written by
+`app/eventadmin.py` in a single transaction: the `events` row, its stages, tracks,
+prizes, rubric and criteria, plus the creator's `owner` row in `event_organizers`.
+A hackathon that half-exists is therefore not reachable.
 
