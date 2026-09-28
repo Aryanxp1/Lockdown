@@ -96,7 +96,9 @@ def unique_slug(table: str, column: str, base: str, scope_column: str = "", scop
 
 
 def seed_rubric(event_id: str, *, created_by: str | None = None,
-                rubric_id: str = "rub_default") -> str:
+                rubric_id: str = "rub_default", criteria=None) -> str:
+    """Create the event's active rubric. `criteria` defaults to the portal default."""
+    entries = list(criteria) if criteria else list(config.RUBRIC_DEFAULT)
     if db.one("SELECT id FROM rubrics WHERE id = ?", (rubric_id,)):
         return rubric_id
     db.insert("rubrics", {
@@ -104,8 +106,16 @@ def seed_rubric(event_id: str, *, created_by: str | None = None,
         "notes": ("Weights are relative: the portal rescales them to sum to 1, so "
                   "editing one weight cannot silently change the scale."),
         "is_active": 1, "created_by": created_by, "created_at": timeutil.now_iso()})
-    for index, (key, label, description, weight, low, high) in enumerate(
-            config.RUBRIC_DEFAULT, start=1):
+    for index, entry in enumerate(entries, start=1):
+        if isinstance(entry, dict):
+            key = entry["key"]
+            label = entry.get("label") or key
+            description = entry.get("description", "")
+            weight = float(entry.get("weight") or 0)
+            low = int(entry.get("min_score", 1))
+            high = int(entry.get("max_score", 5))
+        else:
+            key, label, description, weight, low, high = entry
         db.insert("rubric_criteria", {
             "id": "crit_%s_%s" % (rubric_id, key), "rubric_id": rubric_id, "key": key,
             "label": label, "description": description, "weight": weight,
@@ -117,13 +127,18 @@ def seed_rubric(event_id: str, *, created_by: str | None = None,
 def create_event(*, event_id: str, slug: str, name: str, tagline: str, description: str,
                  rules: str, seq: int, schedule: dict, created_by: str | None = None,
                  target_reviews: int = 3, min_team: int = 1, max_team: int = 4,
-                 status: str = "published") -> str:
+                 status: str = "published", banner: str = "", cover_tone: str = "ink",
+                 location: str = "", gallery_visible: int = 1,
+                 results_visible: int = 1) -> str:
     """Insert an event and its six stages. Shared by the seed and the organizer UI."""
     now = timeutil.now_iso()
     row = {"id": event_id, "slug": util.slugify(slug or name, event_id), "name": name,
            "tagline": tagline, "description": description, "rules": rules, "seq": seq,
            "status": status, "min_team_size": min_team, "max_team_size": max_team,
            "reviews_required": target_reviews, "target_reviews": target_reviews,
+           "banner": banner or "", "cover_tone": cover_tone or "ink",
+           "location": location or "", "gallery_visible": 1 if gallery_visible else 0,
+           "results_visible": 1 if results_visible else 0,
            "created_by": created_by, "created_at": now, "updated_at": now}
     for key in ("registration_open", "registration_close", "team_formation_close",
                 "submissions_open", "submissions_close", "judging_open", "judging_close",
