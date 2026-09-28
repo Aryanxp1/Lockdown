@@ -1,4 +1,11 @@
-"""Organizer views: Operations center, submissions, judges, audit trail."""
+"""Organizer views: the single-event consoles, now scoped to one hackathon.
+
+These are the older operations pages: the submission dossier, the judge
+calibration roster and the audit trail. Each one renders exactly one event --
+the handler resolves it and proves the caller may manage it before the rows are
+queried, so these pages never mix two hackathons together. The shelf of events
+and the per-event desk live in `pages_manage.py`.
+"""
 
 from __future__ import annotations
 
@@ -8,73 +15,9 @@ from . import ui
 from .ui import esc
 
 
-def organizer_dashboard(*, event: dict, stats: dict, recent_audit: list[dict],
-                        csrf_token: str) -> str:
-    """Render the main operations control panel."""
-    audit_rows = []
-    for a in recent_audit:
-        audit_rows.append(f"""<tr>
-  <td class="mono tiny">{ui.format_iso(a.get('created_at'))}</td>
-  <td><span class="chip">{esc(a.get('action'))}</span></td>
-  <td class="tiny">{esc(a.get('actor_name') or a.get('actor_email') or 'System')}</td>
-  <td class="mono tiny">{esc(a.get('entity_type'))}:{esc(a.get('entity_id'))}</td>
-</tr>""")
-
-    audit_tbody = "".join(audit_rows) if audit_rows else '<tr><td colspan="4" class="center dim">No audit records.</td></tr>'
-
-    return f"""<div class="stack stack--lg">
-  <header class="spread">
-    <div>
-      <div class="kicker kicker--red">Operations Command</div>
-      <h1 class="headline--lg">{esc(event.get("name"))}</h1>
-      <p class="lede">Competition status: <strong>{esc(event.get("status"))}</strong></p>
-    </div>
-    <div class="cluster">
-      <form method="POST" action="/organizer/publish">
-        <input type="hidden" name="csrf_token" value="{esc(csrf_token)}">
-        <button type="submit" class="btn btn--danger" data-confirm="Are you sure you want to publish official results?">Publish Results</button>
-      </form>
-    </div>
-  </header>
-
-  <div class="grid grid--4">
-    {ui.stat_card("Total Teams", stats.get("teams", 0))}
-    {ui.stat_card("Submissions", stats.get("projects", 0))}
-    {ui.stat_card("Active Judges", stats.get("judges", 0))}
-    {ui.stat_card("Reviews In", stats.get("reviews", 0))}
-  </div>
-
-  <div class="grid grid--2">
-    <div class="panel">
-      <div class="panel__head"><h3>Quick Operations</h3></div>
-      <div class="panel__body stack">
-        <a href="/organizer/submissions" class="btn btn--ghost btn--block">Manage Submissions &rarr;</a>
-        <a href="/organizer/judges" class="btn btn--ghost btn--block">Judge Assignments & Progress &rarr;</a>
-        <a href="/organizer/export" class="btn btn--ghost btn--block">Export Standings (CSV/JSON) &rarr;</a>
-        <a href="/organizer/audit" class="btn btn--ghost btn--block">Full Immutable Audit Log &rarr;</a>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel__head"><h3>Recent Actions</h3></div>
-      <div class="table-wrap">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Action</th>
-              <th>Actor</th>
-              <th>Target</th>
-            </tr>
-          </thead>
-          <tbody>
-            {audit_tbody}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-</div>"""
+def _back_href(event: dict | None) -> str:
+    """Where "back" goes: this hackathon's desk, or the shelf of hackathons."""
+    return "/organizer/events/%s" % esc(event["id"]) if event else "/organizer"
 
 
 def submissions_list(*, projects: list[dict], event: dict) -> str:
@@ -99,7 +42,7 @@ def submissions_list(*, projects: list[dict], event: dict) -> str:
 
     return f"""<div class="stack stack--lg">
   <header>
-    <a href="/organizer" class="tiny mono dim">&larr; Back to Command Center</a>
+    <a href="/organizer/events/{esc(event.get("id"))}" class="tiny mono dim">&larr; Back to this hackathon</a>
     <h1 class="headline--lg" style="margin-top:10px">Submissions Dossier</h1>
     <p class="lede">All active and superseded team entries for {esc(event.get("name"))}.</p>
   </header>
@@ -123,7 +66,8 @@ def submissions_list(*, projects: list[dict], event: dict) -> str:
 </div>"""
 
 
-def judges_roster(*, judges: list[dict], stats: dict[str, dict]) -> str:
+def judges_roster(*, judges: list[dict], stats: dict[str, dict],
+                  event: dict | None = None) -> str:
     """Render the judges monitoring console with normalization metrics."""
     rows = []
     for j in judges:
@@ -143,8 +87,8 @@ def judges_roster(*, judges: list[dict], stats: dict[str, dict]) -> str:
 
     return f"""<div class="stack stack--lg">
   <header>
-    <a href="/organizer" class="tiny mono dim">&larr; Back to Command Center</a>
-    <h1 class="headline--lg" style="margin-top:10px">Judges Roster & Severity Calibration</h1>
+    <a href="{_back_href(event)}" class="tiny mono dim">&larr; Back to this hackathon</a>
+    <h1 class="headline--lg" style="margin-top:10px">Judges Roster &amp; Severity Calibration</h1>
     <p class="lede">Per-judge distribution metrics used for z-score normalization.</p>
   </header>
 
@@ -167,8 +111,9 @@ def judges_roster(*, judges: list[dict], stats: dict[str, dict]) -> str:
 </div>"""
 
 
-def audit_trail(*, records: list[dict], page: int, total_pages: int) -> str:
-    """Render the full immutable audit trail."""
+def audit_trail(*, records: list[dict], page: int, total_pages: int,
+                base_url: str = "/organizer/audit", event: dict | None = None) -> str:
+    """Render one hackathon's slice of the immutable audit trail."""
     rows = []
     for r in records:
         rows.append(f"""<tr>
@@ -180,11 +125,11 @@ def audit_trail(*, records: list[dict], page: int, total_pages: int) -> str:
 </tr>""")
 
     tbody = "".join(rows) if rows else '<tr><td colspan="5" class="center dim">No audit entries.</td></tr>'
-    pager_html = ui.pager(page, total_pages, lambda p: f"/organizer/audit?page={p}")
+    pager_html = ui.pager(page, total_pages, lambda p: f"{base_url}?page={p}")
 
     return f"""<div class="stack stack--lg">
   <header>
-    <a href="/organizer" class="tiny mono dim">&larr; Back to Command Center</a>
+    <a href="{_back_href(event)}" class="tiny mono dim">&larr; Back to this hackathon</a>
     <h1 class="headline--lg" style="margin-top:10px">Immutable Audit Trail</h1>
     <p class="lede">Append-only operational history with cryptographic non-repudiation.</p>
   </header>

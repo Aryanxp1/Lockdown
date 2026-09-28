@@ -75,10 +75,11 @@ def render_shell(*, title: str, content: str, user: dict | None = None,
 
 
 def _nav_links(role: str | None, current_path: str) -> str:
-    links = [("/", "Home"), ("/gallery", "Gallery"), ("/results", "Results")]
+    links = [("/", "Home"), ("/events", "Hackathons"), ("/gallery", "Gallery"),
+             ("/results", "Results")]
     if role in ("organizer", "admin"):
         links.extend([
-            ("/organizer", "Command Center"),
+            ("/organizer", "My Hackathons"),
             ("/organizer/submissions", "Submissions"),
             ("/organizer/judges", "Judges"),
             ("/organizer/audit", "Audit Log"),

@@ -174,3 +174,119 @@ def format_score(score: float | int | None) -> str:
         return f"{float(score):.2f}"
     except (ValueError, TypeError):
         return "—"
+
+
+# --- event context ------------------------------------------------------
+#
+# Every event-scoped page wears the same breadcrumb and every hackathon is
+# introduced by the same card, so browsing the archive looks the same wherever
+# a visitor arrives from.
+
+TONE_LABELS = {
+    "ink": "Archive",
+    "red": "Flagship",
+    "blue": "Live",
+    "green": "Community",
+    "amber": "Seasonal",
+}
+
+
+def event_cover(event: dict) -> str:
+    """The letterpress cover band: a glyph, a tone, and what kind of event it is."""
+    glyph = (event.get("banner") or "").strip()[:4]
+    if not glyph:
+        glyph = "".join(part[0] for part in (event.get("name") or "?").split()[:2]).upper()
+    tone = (event.get("cover_tone") or "ink").strip().lower()
+    if tone not in TONE_LABELS:
+        tone = "ink"
+    return (f'<div class="cover cover--{tone}" aria-hidden="true">'
+            f'<span class="cover__glyph mono">{esc(glyph)}</span>'
+            f'<span class="cover__tone mono">{esc(TONE_LABELS[tone])}</span>'
+            f"</div>")
+
+
+def event_card(event: dict, *, counts: dict | None = None, blurb: str = "",
+               action_label: str = "View Hackathon", action_href: str = "",
+               status_label: str = "", status_variant: str = "default",
+               links: list | None = None) -> str:
+    """One hackathon in the archive: cover, identity, numbers, one clear way in."""
+    counts = counts or {}
+    blurb = blurb or event.get("tagline") or (event.get("description") or "")[:150]
+    if len(blurb) > 170:
+        blurb = blurb[:167].rstrip() + "\u2026"
+    href = action_href or "/events/%s" % esc(event.get("slug"))
+    metrics = []
+    if counts.get("projects") is not None:
+        metrics.append("%s projects" % counts["projects"])
+    if counts.get("teams") is not None:
+        metrics.append("%s teams" % counts["teams"])
+    if counts.get("tracks") is not None:
+        metrics.append("%s tracks" % counts["tracks"])
+    meta = " \u00b7 ".join(str(item) for item in metrics)
+    stage = counts.get("stage")
+    closes = (event.get("submissions_close") or event.get("results_publish_at") or "")[:10]
+    extra_links = "".join(
+        '<a class="btn btn--sm btn--ghost" href="%s">%s</a>' % (esc(link_href), esc(link_label))
+        for link_label, link_href in (links or []))
+    stage_markup = ('<span>Stage: %s</span>' % esc(stage)) if stage else ""
+    close_markup = ('<span>Closes %s</span>' % esc(closes)) if closes else ""
+    return f"""<article class="event-card">
+  {event_cover(event)}
+  <div class="event-card__body">
+    <div class="spread">
+      <h3 class="event-card__title"><a href="{href}">{esc(event.get("name"))}</a></h3>
+      {badge(status_label or event.get("status", "draft"), status_variant)}
+    </div>
+    <p class="event-card__blurb">{esc(blurb)}</p>
+    <div class="event-card__meta tiny mono dim">
+      <span>{meta}</span>
+      {stage_markup}
+      {close_markup}
+    </div>
+    <div class="event-card__foot">
+      <a class="btn btn--sm" href="{href}">{esc(action_label)} &rarr;</a>
+      {extra_links}
+    </div>
+  </div>
+</article>"""
+
+
+def breadcrumb(trail: list) -> str:
+    """`LOCKDOWN / SAMPLE HACK 2026 / RESULTS`. The last item is the current page."""
+    if not trail:
+        return ""
+    parts = []
+    for index, (label, href) in enumerate(trail):
+        is_last = index == len(trail) - 1
+        if is_last or not href:
+            parts.append('<span class="crumb crumb--here" aria-current="page">%s</span>'
+                         % esc(label))
+        else:
+            parts.append('<a class="crumb" href="%s">%s</a>' % (esc(href), esc(label)))
+    return ('<nav class="crumbs mono" aria-label="Breadcrumb">%s</nav>' % "".join(parts))
+
+
+def timeline(rows: list) -> str:
+    """A dated list of the things an entrant needs to know, in order."""
+    if not rows:
+        return ""
+    items = []
+    for row in rows:
+        state = row.get("state", "")
+        css = {"open": "is-open", "past": "is-past", "closed": "is-past"}.get(state, "is-next")
+        items.append("""<li class="timeline__item %s">
+  <span class="timeline__when mono">%s</span>
+  <span class="timeline__label">%s</span>
+  <span class="timeline__state tiny mono">%s</span>
+</li>""" % (css, esc((row.get("at") or "")[:10] or "--"), esc(row.get("label", "")),
+            esc(row.get("state_label") or state)))
+    return '<ol class="timeline">%s</ol>' % "".join(items)
+
+
+def spec_list(pairs: list) -> str:
+    """A two-column spec table: label on the left, value on the right."""
+    rows = "".join(
+        '<div class="spec"><dt class="tiny mono dim">%s</dt><dd>%s</dd></div>'
+        % (esc(label), value) for label, value in pairs)
+    return '<dl class="spec-list">%s</dl>' % rows
+
