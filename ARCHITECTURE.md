@@ -41,11 +41,11 @@ an *existing* one forward. Both are idempotent, so boot order never matters.
   worker pools, schedulers, or cron tasks exist.
 * **One SQLite connection per thread.** `db.conn()` caches the handle in
   `threading.local()`. `server.dispatch()` calls `db.release()` in a `finally:`
-  block (`app/server.py:115`) so handles do not leak.
+  block (`app/server.py:116`) so handles do not leak.
 * **Serialised writes, concurrent reads.** WAL mode, `synchronous=NORMAL`,
-  `foreign_keys=ON`, `busy_timeout=10000` (`app/db.py:23`). Mutations take a
+  `foreign_keys=ON`, `busy_timeout=10000` (`app/db.py:32`). Mutations take a
   process-wide `RLock` and execute inside `BEGIN IMMEDIATE` (`app/db.py:87`,
-  `app/db.py:97`). `db.tx()` nests cleanly.
+  `app/db.py:110`). `db.tx()` nests cleanly (`app/db.py:98`).
 * **Single write path.** `db.insert`, `db.update`, `db.execute` always pass
   parameter tuples, never interpolated strings (`app/db.py:123`).
 * **Startup is the only batch run.** `python -m app` seeds automatically when
@@ -92,7 +92,7 @@ an *existing* one forward. Both are idempotent, so boot order never matters.
 4. **Session resolution.** `auth.resolve()` reads `session` cookie or bearer header, hashes token with SHA-256, looks up non-revoked session, loads user record, and bumps `last_seen_at` (`app/auth.py:78`).
 5. **Role guards.** If route defines `roles=`, `auth.role_allows()` verifies membership (`app/server.py:194`). Unauthenticated web requests redirect to `/login?next=…`; API requests return `401 Unauthorized`. Refusals log to `audit_log` as `access.denied`.
 6. **CSRF enforcement.** State-changing verbs on routes with `csrf=True` require valid token via `X-CSRF-Token`, `_csrf`, or `csrf_token` fields (`app/server.py:215`). Tokens are compared constant-time. Failures return `403 csrf_failed` and audit as `csrf.rejected`.
-7. **Handler dispatch & error mapping.** Exceptions map to structured responses: `Redirect` → `303`, `Problem` → `4xx/5xx` JSON or HTML error, unhandled → `500` + `audit_log` error event (`app/server.py:100`).
+7. **Handler dispatch & error mapping.** Exceptions map to structured responses: `Redirect` → `303`, `Problem` → `4xx/5xx` JSON or HTML error, unhandled → `500` + `audit_log` error event (`app/server.py:102`).
 8. **Security headers.** Applied unconditionally to every response: `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, `X-Frame-Options: DENY`, `Content-Security-Policy: default-src 'self'`, `Cache-Control: no-store` (`app/server.py:167`).
 
 ---
@@ -123,8 +123,8 @@ Every route matching `/organizer/events/{event_id}/...` resolves the event and c
 
 To prevent discrepancies across views, key business rules are centralized:
 
-* **Event windows.** Deadlines and states are computed once in `app/events.py`. `submission_window()` dictates if teams can edit or submit. Both the HTML form and the POST endpoint call `_require_window()` (`app/routes.py:687`), ensuring identical behavior across UI and API.
-* **Scoring engine.** `scoring.scoreboard(event)` (`app/scoring.py:317`) is the sole ranking calculator. The organizer dashboard, CSV exporter, public results page, and publication pipeline all consume this function. Rankings never diverge across pages.
+* **Event windows.** Deadlines and states are computed once in `app/events.py`. `submission_window()` dictates if teams can edit or submit. Both the HTML form and the POST endpoint call `_require_window()` (`app/routes.py:239`), ensuring identical behavior across UI and API.
+* **Scoring engine.** `scoring.scoreboard(event)` (`app/scoring.py:288`) is the sole ranking calculator, and it is scoped to one event. The organizer dashboard, CSV exporter, public results page, and publication pipeline all consume this function. Rankings never diverge across pages, and two hackathons in the same database can never influence each other's standings.
 * **Audit trail.** `app/audit.py:record()` logs operations synchronously in the calling transaction. A convenience wrapper `audit.refused()` records rejected actions (e.g. `access.denied`, `csrf.rejected`, `scores.refused`) and never raises an exception.
 
 ---
@@ -133,8 +133,8 @@ To prevent discrepancies across views, key business rules are centralized:
 
 The portal uses server-side template-less string rendering:
 
-* **Pure Python string builders.** Views in `app/views/` return HTML strings. All user-supplied input is sanitized through `util.esc()` (`app/util.py:10`).
-* **Layout shell.** `render_shell()` (`app/views/layout.py:73`) wraps all pages with consistent semantic navigation, user context, flash notifications, and role-based links.
+* **Pure Python string builders.** Views in `app/views/` return HTML strings. All user-supplied input is sanitized through `views.ui.esc()` (`app/views/ui.py:12`), which routes to `html.escape(..., quote=True)`.
+* **Layout shell.** `render_shell()` (`app/views/layout.py:10`) wraps all pages with consistent semantic navigation, user context, flash notifications, and role-based links.
 * **Content Security Policy.** Script execution is restricted by `default-src 'self'`. No inline JavaScript (`<script>...</script>`) or inline event handlers (`onclick=`) exist anywhere in the application.
 * **Progressive enhancement (`app/views/static/app.js`).** Pages remain fully functional with JavaScript disabled. When active, `app.js` provides:
   * Dynamic deadline countdowns with minute precision.
