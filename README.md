@@ -226,6 +226,7 @@ stage pipeline, and the six most recently submitted projects.
 Anonymous visitors get the full exhibition: track filters, free-text search,
 three sort orders and pagination, scoped to one hackathon's canonical
 (non-superseded) submissions.
+<img width="1730" height="975" alt="image" src="https://github.com/user-attachments/assets/720a8706-d1ee-4e85-9787-4433cbb933a1" />
 
 <!-- <img src="assests/screenshots/gallery.png" alt="Public project gallery with track filters" width="100%"> -->
 *Figure 2 — Public gallery (`/gallery`) — slot: `assests/screenshots/gallery.png`.*
