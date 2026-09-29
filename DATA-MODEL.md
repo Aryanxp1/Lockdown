@@ -14,12 +14,12 @@ revision tracking, and snapshot publication formats.
 * **Identifiers:** Text primary keys with a short domain prefix (e.g. `usr_`,
   `prj_`, `rev_`, `asg_`, `evt_`, `trk_`, `rsc_`, `pub_`).
 * **Timestamps:** ISO-8601 UTC text formatted as `YYYY-MM-DDTHH:MM:SSZ`
-  (`app/timeutil.py:17`). Timestamps sort lexicographically.
+  (`app/timeutil.py:21`). Timestamps sort lexicographically.
 * **Booleans:** `INTEGER` columns storing `0` or `1`.
 * **JSON columns:** Stored as `TEXT` with JSON payloads (`project_versions.snapshot`,
   `review_revisions.scores_json`, `result_publications.rows_json`).
 * **Constraints:** `PRAGMA foreign_keys = ON` is applied on every database
-  connection (`app/db.py:24`). Cascade deletes clean up child records when
+  connection (`app/db.py:34`). Cascade deletes clean up child records when
   parent entities are removed.
 * **Event scoping:** `events.id` is the scope key. Every table that describes a
   single competition carries an `event_id` foreign key, so a row is never shared
@@ -128,7 +128,7 @@ Published results are frozen in `result_publications`. When an organizer publish
 1. Calculates the current ranking via `scoring.scoreboard(event)`.
 2. Marks prior publications `is_current = 0`.
 3. Serializes the project ranking list to `rows_json`.
-4. Computes a SHA-256 checksum over the JSON text (`app/results.py:46`).
+4. Computes a SHA-256 checksum over the JSON text (`app/results.py:56`).
 5. Inserts the snapshot with incremented `revision_no` and `is_current = 1`.
 
 #### Snapshot JSON format (`rows_json`):
@@ -150,9 +150,9 @@ Published results are frozen in `result_publications`. When an organizer publish
 ```
 
 ### `certificates`
-Cryptographic credentials issued to participants (`app/results.py:100`):
+Cryptographic credentials issued to participants (`app/results.py:139`):
 * `kind`: `winner` (top 3 ranked projects) or `participation`.
-* `verification_code`: First 20 uppercase characters of `SHA-256(recipient + kind + secret)`.
+* `code`: the first 20 characters, upper-cased, of `SHA-256("cert|<event_id>|<project_id>|<kind>" + portal_secret)` — the `code` column in `app/schema.sql`, and unique across the install (`app/results.py:158`).
 
 ### `advancements`
 Progression tracking for multi-stage events. Stores `decision` (`advanced` for ranks 1–8, `eliminated` for lower ranks).

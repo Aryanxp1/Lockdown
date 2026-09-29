@@ -8,6 +8,8 @@ document.addEventListener("DOMContentLoaded", () => {
   initScoreCalculator();
   initDraftAutosave();
   initConfirmActions();
+  initCardHoverEffect();
+  initFastLogin();
 });
 
 function initCountdowns() {
@@ -156,5 +158,69 @@ function initConfirmActions() {
         e.stopPropagation();
       }
     });
+  });
+}
+
+function initCardHoverEffect() {
+  const cards = document.querySelectorAll(".card, .event-card, .spotlight-card, .panel, .kpi-card");
+  cards.forEach(card => {
+    card.addEventListener("mousemove", e => {
+      const rect = card.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      card.style.setProperty("--mouse-x", `${x}px`);
+      card.style.setProperty("--mouse-y", `${y}px`);
+    });
+    card.addEventListener("mouseenter", () => {
+      card.setAttribute("data-hovered", "true");
+    });
+    card.addEventListener("mouseleave", () => {
+      card.removeAttribute("data-hovered");
+    });
+  });
+}
+
+function initFastLogin() {
+  const toggle = document.getElementById("fastLoginToggle");
+  const dropdown = document.getElementById("fastLoginDropdown");
+  if (!toggle || !dropdown) return;
+
+  function openDropdown() {
+    dropdown.removeAttribute("hidden");
+    dropdown.classList.add("is-open");
+    toggle.setAttribute("aria-expanded", "true");
+  }
+
+  function closeDropdown() {
+    dropdown.setAttribute("hidden", "");
+    dropdown.classList.remove("is-open");
+    toggle.setAttribute("aria-expanded", "false");
+  }
+
+  toggle.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const isOpen = dropdown.classList.contains("is-open");
+    if (isOpen) {
+      closeDropdown();
+    } else {
+      openDropdown();
+    }
+  });
+
+  dropdown.addEventListener("click", (e) => {
+    e.stopPropagation();
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!toggle.contains(e.target) && !dropdown.contains(e.target)) {
+      closeDropdown();
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && dropdown.classList.contains("is-open")) {
+      closeDropdown();
+      toggle.focus();
+    }
   });
 }

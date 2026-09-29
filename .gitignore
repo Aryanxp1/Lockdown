@@ -13,3 +13,6 @@ tmp/
 .env
 .venv/
 venv/
+
+# Local browser-automation tooling output (screenshots, console logs, traces).
+.playwright-mcp/

@@ -38,6 +38,15 @@ STATIC_DIR = APP_DIR / "views" / "static"
 SEED_ON_BOOT = _env("PORTAL_SEED", "1").lower() not in ("0", "false", "no")
 RESET_ON_BOOT = _env("PORTAL_RESET", "0").lower() in ("1", "true", "yes")
 
+# --- demo affordances ----------------------------------------------------
+# One-click demo sign-in (GET/POST /fast-login). It hands out a real session
+# for a seeded fixture account to anybody who can reach the portal, with no
+# password and no CSRF token, so it is an exhibition convenience and not an
+# authentication mechanism. It is therefore OFF unless an operator asks for it
+# explicitly: `PORTAL_FAST_LOGIN=1` for a demo box, and the header link that
+# advertises it only renders when the flag is on.
+FAST_LOGIN_ENABLED = _env("PORTAL_FAST_LOGIN", "0").lower() in ("1", "true", "yes", "on")
+
 # --- sessions -----------------------------------------------------------
 SESSION_COOKIE = "session"
 SESSION_TTL_DAYS = int(_env("PORTAL_SESSION_DAYS", "30"))

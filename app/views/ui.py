@@ -1,4 +1,4 @@
-"""Editorial UI component primitives for Lockdown.
+"""Modern UI component primitives for Lockdown.
 
 Every helper produces safe, well-formed HTML without external template engines.
 """
@@ -45,7 +45,7 @@ def chip(label: str, *, red: bool = False, solid: bool = False,
 
 
 def stamp(text: str) -> str:
-    """Render a newsprint-style rubber stamp."""
+    """Render a high-tech classified/status stamp."""
     return f'<span class="stamp">{esc(text)}</span>'
 
 
@@ -55,7 +55,7 @@ def button(label: str, *, href: str | None = None, variant: str = "default",
            confirm: str | None = None, block: bool = False) -> str:
     """Render a styled button or anchor styled as a button."""
     classes = ["btn"]
-    if variant in ("ghost", "danger"):
+    if variant in ("ghost", "danger", "primary"):
         classes.append(f"btn--{variant}")
     if size == "sm":
         classes.append("btn--sm")
@@ -74,7 +74,7 @@ def button(label: str, *, href: str | None = None, variant: str = "default",
 
 def callout(content: str, *, title: str | None = None,
             variant: str = "default") -> str:
-    """Render an editorial callout box."""
+    """Render an informative callout box."""
     cls = f"callout callout--{variant}" if variant != "default" else "callout"
     head = f"<h4>{esc(title)}</h4>" if title else ""
     return f'<div class="{cls}">{head}<p>{content}</p></div>'
@@ -83,9 +83,10 @@ def callout(content: str, *, title: str | None = None,
 def empty_state(title: str, body: str = "", *, action_label: str = "",
                 action_href: str = "") -> str:
     """Render an empty state placeholder."""
-    action = f'<p><a href="{esc(action_href)}" class="btn btn--sm">{esc(action_label)}</a></p>' if action_href else ""
+    action = f'<p class="u-mt-16"><a href="{esc(action_href)}" class="btn btn--sm btn--primary">{esc(action_label)} &rarr;</a></p>' if action_href else ""
     body_p = f'<p class="empty__body">{esc(body)}</p>' if body else ""
     return f"""<div class="empty">
+  <div class="u-fs-16 u-mb-10 u-text-ink-3" aria-hidden="true">&#9671;</div>
   <h3 class="empty__title">{esc(title)}</h3>
   {body_p}
   {action}
@@ -94,9 +95,9 @@ def empty_state(title: str, body: str = "", *, action_label: str = "",
 
 def stat_card(label: str, value: Any, *, red: bool = False,
               hint: str = "") -> str:
-    """Render a single high-impact metric."""
+    """Render a single high-impact metric tile with crisp typographic hierarchy."""
     cls = "stat stat--red" if red else "stat"
-    hint_span = f'<div class="tiny dim">{esc(hint)}</div>' if hint else ""
+    hint_span = f'<div class="stat__hint">{esc(hint)}</div>' if hint else ""
     return f"""<div class="{cls}">
   <div class="stat__value">{esc(value)}</div>
   <div class="stat__label">{esc(label)}</div>
@@ -111,14 +112,18 @@ def stage_rail(stages: list[dict], current_code: str = "") -> str:
         is_cur = stage.get("code") == current_code or stage.get("is_current")
         is_past = stage.get("is_past")
         cls = "rail__step"
+        status_symbol = ""
         if is_cur:
             cls += " rail__step--current"
+            status_symbol = ' <span class="rail__indicator">&bull; Active</span>'
         elif is_past:
             cls += " rail__step--past"
+            status_symbol = ' <span class="rail__indicator rail__indicator--done">&#10003;</span>'
         else:
             cls += " rail__step--future"
+
         steps.append(f"""<div class="{cls}">
-  <span class="rail__num">Stage {idx}</span>
+  <span class="rail__num">Stage {idx}{status_symbol}</span>
   <span class="rail__label">{esc(stage.get("name", ""))}</span>
   <span class="rail__dates">{esc(stage.get("date_range", ""))}</span>
 </div>""")
@@ -130,12 +135,13 @@ def progress_bar(value: int, total: int, *, red: bool = False,
     """Render an accessible progress bar."""
     pct = 0 if total <= 0 else min(100, max(0, round(value * 100 / total)))
     cls = "bar bar--red" if red else "bar"
-    label_markup = (f'<div class="spread tiny dim"><span>{esc(label)}</span>'
-                    f'<span>{value}/{total} ({pct}%)</span></div>') if label else ""
-    return f"""<div class="stack" style="gap:4px">
+    label_markup = (f'<div class="spread tiny dim u-mb-4"><span>{esc(label)}</span>'
+                    f'<span class="mono u-text-ink">{value}/{total} ({pct}%)</span></div>') if label else ""
+    return f"""<div class="stack u-gap-2">
   {label_markup}
-  <div class="{cls}" role="progressbar" aria-valuenow="{pct}" aria-valuemin="0" aria-valuemax="100">
-    <div class="bar__fill" style="width: {pct}%"></div>
+  <div class="{cls}" role="progressbar" aria-valuenow="{pct}" aria-valuemin="0" aria-valuemax="100"
+       data-bar-pct="{pct}">
+    <div class="bar__fill" data-bar-pct="{pct}"></div>
   </div>
 </div>"""
 
@@ -162,7 +168,7 @@ def pager(current: int, total_pages: int, url_fn) -> str:
 def format_iso(dt_str: str | None) -> str:
     """Clean ISO timestamp for display."""
     if not dt_str:
-        return ""
+        return "—"
     return dt_str.replace("T", " ").replace("Z", "")[:16]
 
 
@@ -176,60 +182,58 @@ def format_score(score: float | int | None) -> str:
         return "—"
 
 
-# --- event context ------------------------------------------------------
-#
-# Every event-scoped page wears the same breadcrumb and every hackathon is
-# introduced by the same card, so browsing the archive looks the same wherever
-# a visitor arrives from.
+# --- Deterministic Visual Generation ---------------------------------------
 
 TONE_LABELS = {
-    "ink": "Archive",
-    "red": "Flagship",
-    "blue": "Live",
-    "green": "Community",
-    "amber": "Seasonal",
+    "ink": "Flagship",
+    "red": "High Stakes",
+    "blue": "Open",
+    "green": "Sprint",
+    "amber": "Invitational",
 }
 
 
 def event_cover(event: dict) -> str:
-    """The letterpress cover band: a glyph, a tone, and what kind of event it is."""
+    """The modern hackathon visual cover: clean architectural header."""
     glyph = (event.get("banner") or "").strip()[:4]
     if not glyph:
         glyph = "".join(part[0] for part in (event.get("name") or "?").split()[:2]).upper()
-    tone = (event.get("cover_tone") or "ink").strip().lower()
+    tone = (event.get("cover_tone") or "blue").strip().lower()
     if tone not in TONE_LABELS:
-        tone = "ink"
+        tone = "blue"
+
     return (f'<div class="cover cover--{tone}" aria-hidden="true">'
+            f'<div class="cover__grid"></div>'
             f'<span class="cover__glyph mono">{esc(glyph)}</span>'
             f'<span class="cover__tone mono">{esc(TONE_LABELS[tone])}</span>'
             f"</div>")
 
 
 def event_card(event: dict, *, counts: dict | None = None, blurb: str = "",
-               action_label: str = "View Hackathon", action_href: str = "",
+               action_label: str = "Explore Hackathon", action_href: str = "",
                status_label: str = "", status_variant: str = "default",
                links: list | None = None) -> str:
-    """One hackathon in the archive: cover, identity, numbers, one clear way in."""
+    """Modern hackathon event card: clean typographic hierarchy, metadata strip, and clear CTA."""
     counts = counts or {}
     blurb = blurb or event.get("tagline") or (event.get("description") or "")[:150]
-    if len(blurb) > 170:
-        blurb = blurb[:167].rstrip() + "\u2026"
+    if len(blurb) > 160:
+        blurb = blurb[:157].rstrip() + "…"
     href = action_href or "/events/%s" % esc(event.get("slug"))
-    metrics = []
-    if counts.get("projects") is not None:
-        metrics.append("%s projects" % counts["projects"])
-    if counts.get("teams") is not None:
-        metrics.append("%s teams" % counts["teams"])
-    if counts.get("tracks") is not None:
-        metrics.append("%s tracks" % counts["tracks"])
-    meta = " \u00b7 ".join(str(item) for item in metrics)
+
     stage = counts.get("stage")
     closes = (event.get("submissions_close") or event.get("results_publish_at") or "")[:10]
+    
+    projects_cnt = counts.get("projects", 0)
+    teams_cnt = counts.get("teams", 0)
+    tracks_cnt = counts.get("tracks", 0)
+
     extra_links = "".join(
         '<a class="btn btn--sm btn--ghost" href="%s">%s</a>' % (esc(link_href), esc(link_label))
         for link_label, link_href in (links or []))
-    stage_markup = ('<span>Stage: %s</span>' % esc(stage)) if stage else ""
-    close_markup = ('<span>Closes %s</span>' % esc(closes)) if closes else ""
+
+    stage_part = f'<span>Stage: <strong class="cyan-val">{esc(stage)}</strong></span>' if stage else ""
+    close_part = f'<span class="dim">Closes {esc(closes)}</span>' if closes else ""
+
     return f"""<article class="event-card">
   {event_cover(event)}
   <div class="event-card__body">
@@ -238,55 +242,83 @@ def event_card(event: dict, *, counts: dict | None = None, blurb: str = "",
       {badge(status_label or event.get("status", "draft"), status_variant)}
     </div>
     <p class="event-card__blurb">{esc(blurb)}</p>
-    <div class="event-card__meta tiny mono dim">
-      <span>{meta}</span>
-      {stage_markup}
-      {close_markup}
+    <div class="event-card__meta">
+      <span><strong class="mono ink-val">{projects_cnt}</strong> Projects</span>
+      <span class="meta-dot">&middot;</span>
+      <span><strong class="mono ink-val">{teams_cnt}</strong> Teams</span>
+      <span class="meta-dot">&middot;</span>
+      <span><strong class="mono ink-val">{tracks_cnt}</strong> Tracks</span>
+      {f'<span class="meta-dot">&middot;</span> {stage_part}' if stage_part else ''}
+      {f'<span class="meta-dot">&middot;</span> {close_part}' if close_part else ''}
     </div>
     <div class="event-card__foot">
-      <a class="btn btn--sm" href="{href}">{esc(action_label)} &rarr;</a>
-      {extra_links}
+      <a class="btn btn--sm btn--primary" href="{href}">{esc(action_label)} &rarr;</a>
+      <div class="cluster">{extra_links}</div>
     </div>
   </div>
 </article>"""
 
 
+def project_card(p: dict) -> str:
+    """Render a modern project card with clean metadata and direct CTA."""
+    tags = "".join(f'<span class="meta-tag">{esc(t)}</span>' for t in (p.get("tags") or [])[:3])
+    summary = esc(p.get("summary") or p.get("description", ""))
+    if len(summary) > 130:
+        summary = summary[:127] + "…"
+    team_name = esc(p.get("team_name") or "Solo")
+    pid = esc(p.get("id"))
+    title = esc(p.get("title"))
+    track = esc(p.get("track") or "General Track")
+    votes = p.get("vote_count", 0)
+
+    return f"""<article class="card card--project">
+  <div class="card__header">
+    <span class="mono tiny kicker-tight">{track}</span>
+    <span class="mono tiny vote-counter">&uarr; {votes}</span>
+  </div>
+  <h3 class="card__title"><a href="/gallery/{pid}">{title}</a></h3>
+  <div class="card__team mono tiny dim">BY {team_name}</div>
+  <div class="card__body">{summary}</div>
+  <div class="card__foot">
+    <div class="cluster">{tags}</div>
+    <a href="/gallery/{pid}" class="btn btn--sm btn--ghost">View Project &rarr;</a>
+  </div>
+</article>"""
+
+
 def breadcrumb(trail: list) -> str:
-    """`LOCKDOWN / SAMPLE HACK 2026 / RESULTS`. The last item is the current page."""
+    """Render modern breadcrumb trail."""
     if not trail:
         return ""
     parts = []
     for index, (label, href) in enumerate(trail):
         is_last = index == len(trail) - 1
         if is_last or not href:
-            parts.append('<span class="crumb crumb--here" aria-current="page">%s</span>'
-                         % esc(label))
+            parts.append(f'<span class="crumb crumb--here" aria-current="page">{esc(label)}</span>')
         else:
-            parts.append('<a class="crumb" href="%s">%s</a>' % (esc(href), esc(label)))
-    return ('<nav class="crumbs mono" aria-label="Breadcrumb">%s</nav>' % "".join(parts))
+            parts.append(f'<a class="crumb" href="{esc(href)}">{esc(label)}</a>')
+    return f'<nav class="crumbs" aria-label="Breadcrumb">{"".join(parts)}</nav>'
 
 
 def timeline(rows: list) -> str:
-    """A dated list of the things an entrant needs to know, in order."""
+    """A modern dated list of competition stages and deadlines."""
     if not rows:
         return ""
     items = []
     for row in rows:
         state = row.get("state", "")
         css = {"open": "is-open", "past": "is-past", "closed": "is-past"}.get(state, "is-next")
-        items.append("""<li class="timeline__item %s">
-  <span class="timeline__when mono">%s</span>
-  <span class="timeline__label">%s</span>
-  <span class="timeline__state tiny mono">%s</span>
-</li>""" % (css, esc((row.get("at") or "")[:10] or "--"), esc(row.get("label", "")),
-            esc(row.get("state_label") or state)))
-    return '<ol class="timeline">%s</ol>' % "".join(items)
+        items.append(f"""<li class="timeline__item {css}">
+  <span class="timeline__when mono">{esc((row.get("at") or "")[:10] or "--")}</span>
+  <span class="timeline__label">{esc(row.get("label", ""))}</span>
+  <span class="timeline__state mono tiny">{esc(row.get("state_label") or state)}</span>
+</li>""")
+    return f'<ol class="timeline">{"".join(items)}</ol>'
 
 
 def spec_list(pairs: list) -> str:
     """A two-column spec table: label on the left, value on the right."""
     rows = "".join(
-        '<div class="spec"><dt class="tiny mono dim">%s</dt><dd>%s</dd></div>'
-        % (esc(label), value) for label, value in pairs)
-    return '<dl class="spec-list">%s</dl>' % rows
-
+        f'<div class="spec"><dt class="tiny mono dim">{esc(label)}</dt><dd class="spec__val">{value}</dd></div>'
+        for label, value in pairs)
+    return f'<dl class="spec-list">{rows}</dl>'

@@ -81,6 +81,8 @@ def build_routes() -> http.Router:
     # yet, so there is nothing to compare a token against.
     r.post("/signin", handle_signin, public=True)
     r.post("/signout", handle_signout, public=True, csrf=True)
+    r.post("/fast-login", handle_fast_login, public=True)
+    r.get("/fast-login", handle_fast_login, public=True)
 
     # --- community actions ----------------------------------------------
     r.post("/gallery/{project_id}/vote", handle_vote, roles=ANY_ROLE, csrf=True)
@@ -818,6 +820,107 @@ def handle_signout(req: http.Request) -> http.Response:
         audit.record(action="auth.signout", entity_type="user",
                      entity_id=req.session["user_id"],
                      summary="Signed out %s" % req.session.get("email", ""), request=req)
+    return response
+
+
+FAST_LOGIN_PROFILES = {
+    "organizer": {
+        "email": "organizer@dogfood.test",
+        "redirect": "/organizer",
+        "role_label": "Organizer",
+    },
+    "admin": {
+        "email": "admin@dogfood.test",
+        "redirect": "/organizer",
+        "role_label": "Administrator",
+    },
+    "judge_sample": {
+        "email": "tomas.varga@example.org",
+        "redirect": "/judge",
+        "role_label": "Judge (Sample Hack)",
+    },
+    "judge_dogfood": {
+        "email": "wei.lindqvist@example.org",
+        "redirect": "/judge",
+        "role_label": "Judge (Dogfood)",
+    },
+    "builder_sample": {
+        "email": "priya1@example.org",
+        "redirect": "/participant",
+        "role_label": "Builder (Sample Hack)",
+    },
+    "builder_dogfood": {
+        "email": "member1_1@example.org",
+        "redirect": "/participant",
+        "role_label": "Builder (Dogfood)",
+    },
+}
+
+FAST_LOGIN_ALIASES = {
+    "judge_a": "judge_sample",
+    "judge_b": "judge_dogfood",
+    "judge": "judge_sample",
+    "participant": "builder_sample",
+    "participant_2": "builder_dogfood",
+    "builder": "builder_sample",
+    "staff": "organizer",
+}
+
+
+def handle_fast_login(req: http.Request) -> http.Response:
+    """Instant sign-in for demo accounts during hackathon judging and presentations.
+
+    Disabled unless `PORTAL_FAST_LOGIN=1`, because this endpoint mints a real
+    session for a seeded fixture account without a password or a CSRF token. When
+    the flag is off the route behaves as if it did not exist: a 404 and no
+    session, so a deployment that forgets the flag cannot leak demo logins.
+    """
+    if not config.FAST_LOGIN_ENABLED:
+        raise http.Problem(404, "not_found",
+                           "One-click demo sign-in is disabled on this deployment.")
+
+    account_key = (req.field("account", "") or req.q("user", "") or req.q("account", "")).strip().lower()
+    if account_key in FAST_LOGIN_ALIASES:
+        account_key = FAST_LOGIN_ALIASES[account_key]
+
+    profile = FAST_LOGIN_PROFILES.get(account_key)
+    target_email = profile["email"] if profile else account_key
+    target_url = profile["redirect"] if profile else util.safe_next(req.field("next", "") or req.q("next", ""), "")
+
+    # Fallback lookup in config demo accounts if not in profiles
+    if not profile:
+        for key, email, _name, role, _token in (config.DEMO_ACCOUNTS + config.EXTRA_DEMO_ACCOUNTS):
+            if key.lower() == account_key:
+                target_email = email
+                if not target_url:
+                    target_url = "/organizer" if role in ("organizer", "admin") else ("/judge" if role == "judge" else "/participant")
+                break
+
+    user = auth.user_by_email(target_email)
+    if not user:
+        # Fallback search by ID or name
+        user = db.one("SELECT * FROM users WHERE id = ? OR name LIKE ? COLLATE NOCASE LIMIT 1",
+                      (target_email, f"%{target_email}%"))
+
+    if not user:
+        raise http.Problem(404, "user_not_found", f"Demo account '{account_key}' was not found.")
+
+    if not target_url:
+        role = user.get("role")
+        if role in ("organizer", "admin"):
+            target_url = "/organizer"
+        elif role == "judge":
+            target_url = "/judge"
+        elif role == "participant":
+            target_url = "/participant"
+        else:
+            target_url = "/"
+
+    response = http.Response.redirect(target_url)
+    auth.start(req, response, user, label="fast-login", is_demo=True)
+    audit.record(action="auth.signin", entity_type="user", entity_id=user["id"],
+                 summary=f"Fast login as {user['name']} ({user['role']})", request=req,
+                 actor=_actor(user))
     return response
 
 

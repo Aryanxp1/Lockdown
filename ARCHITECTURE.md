@@ -6,7 +6,7 @@ describes how the code in `app/` is put together: what runs, in what order, and
 where each rule lives.
 
 Everything here reflects the actual codebase. Where the implementation stops
-short of a feature, [README.md](README.md#known-limitations) documents the gap.
+short of a feature, [README.md](README.md#-known-limitations) documents the gap.
 
 ---
 
@@ -63,7 +63,7 @@ an *existing* one forward. Both are idempotent, so boot order never matters.
 | `app/migrations.py` | Additive, idempotent upgrades for older databases | `migrate`, `SCHEMA_VERSION` |
 | `app/http.py` | `Request`, `Response`, `Problem`, `Router` | `match`, `field`, `json` |
 | `app/server.py` | HTTP pipeline, static dispatch, guards | `handle_request`, guards |
-| `app/routes.py` | Route declarations (56 endpoints) | `build_routes()` |
+| `app/routes.py` | Route declarations — 58 registrations (37 GET, 21 POST) | `build_routes()` |
 | `app/views/` | HTML view rendering & shell layout | `render_shell`, pages_* |
 | `app/views/pages_events.py` | Public event directory, event cover page, per-event gallery & results | `event_directory`, `event_page` |
 | `app/views/pages_manage.py` | The shelf of hackathons and one event's management desk | `manage_home`, `event_overview` |
@@ -99,18 +99,20 @@ an *existing* one forward. Both are idempotent, so boot order never matters.
 
 ## 4. Route surface
 
-The portal registers 56 routes in `build_routes()` (`app/routes.py:59`) — 36 GET and
-20 POST. Each route explicitly declares allowed roles and CSRF requirements:
+The portal registers 58 routes in `build_routes()` (`app/routes.py`) — 37 GET and
+21 POST. The route-by-route inventory, with each route's guard, CSRF flag and
+scope, is in **[FEATURES.md](FEATURES.md#2-complete-route-inventory)**. Each route
+explicitly declares allowed roles and CSRF requirements:
 
 | Area | Endpoints | Access |
 | --- | --- | --- |
 | **Public** | `GET /`<br>`GET /gallery`, `GET /projects` (alias)<br>`GET /gallery/{project_id}`<br>`GET /results` | Public |
 | **Event directory** | `GET /events`<br>`GET /events/{slug}`<br>`GET /events/{slug}/gallery`<br>`GET /events/{slug}/results` | Public |
-| **Auth** | `GET /signin`, `GET /login`<br>`POST /signin` (public, CSRF bypassed)<br>`POST /signout` | Public / Authenticated |
+| **Auth** | `GET /signin`, `GET /login`<br>`POST /signin` (public, CSRF bypassed)<br>`POST /signout`<br>`GET\|POST /fast-login` (demo only, `PORTAL_FAST_LOGIN=1`) | Public / Authenticated |
 | **Community** | `POST /gallery/{project_id}/vote`<br>`POST /gallery/{project_id}/comment` | Any role, CSRF |
 | **Participant** | `GET /participant`<br>`POST /participant/team/create`<br>`GET /participant/project/new`, `GET /projects/new`<br>`POST /participant/project/new`, `POST /projects/new`<br>`GET /participant/project/edit`<br>`POST /participant/project/edit` | `participant`, `admin`<br>CSRF on POST |
 | **Judge** | `GET /judge`<br>`GET /judge/assignments`<br>`GET /judge/evaluate/{project_id}`<br>`POST /judge/evaluate/{project_id}` | `judge`, `admin`<br>CSRF on POST |
-| **Organizer — shelf** | `GET /organizer`<br>`GET\|POST /organizer/events/new`<br>`GET /organizer/submissions`<br>`GET /organizer/judges`<br>`GET /organizer/audit`<br>`POST /organizer/publish`<br>`GET /organizer/export` | `organizer`, `admin`<br>CSRF on POST |
+| **Organizer — shelf** | `GET /organizer`<br>`GET\|POST /organizer/events/new`<br>`GET /organizer/submissions`<br>`GET /organizer/judges`<br>`GET /organizer/audit`<br>`POST /organizer/publish` | `organizer`, `admin`<br>CSRF on POST |
 | **Organizer — one event** | `GET /organizer/events/{event_id}`<br>`GET\|POST /organizer/events/{event_id}/stages`<br>`POST /organizer/events/{event_id}/stages/remove`<br>`GET /organizer/events/{event_id}/teams`<br>`GET /organizer/events/{event_id}/submissions`<br>`GET\|POST /organizer/events/{event_id}/judges`<br>`GET\|POST /organizer/events/{event_id}/assignments`<br>`POST /organizer/events/{event_id}/assignments/revoke`<br>`GET /organizer/events/{event_id}/reviews`<br>`GET\|POST /organizer/events/{event_id}/results`<br>`GET /organizer/events/{event_id}/audit`<br>`GET\|POST /organizer/events/{event_id}/settings`<br>`POST /organizer/events/{event_id}/organizers`<br>`POST /organizer/events/{event_id}/organizers/remove` | `organizer`, `admin`<br>CSRF on POST<br>**plus** `events.can_manage` |
 | **API** | `GET /api/judge/scores`<br>`GET /api/export.csv`, `GET /organizer/export` | Authenticated / Organizer |
 
@@ -235,9 +237,17 @@ proves the upgrade path.
 
 Verification tools included in the repository:
 
-* `run.py`: Acceptance test suite testing login flows, CSRF, judging, score normalization, public embargo enforcement, and certificate issuance.
-* `tmp/smoke.py`: End-to-end smoke verification executing complete judging lifecycles.
-* `tmp/doc_facts.py`: Real-time inspector validating table schemas, row counts, and rubric configurations directly against live database volumes.
-* `tests/test_event_isolation.py`: Multi-hackathon boundary — draft visibility, per-event public pages, cross-event write refusal, audit coverage (unittest).
-* `tests/test_migrations.py`: The version 1 → 2 upgrade path, idempotency, and "never invent a missing table" (unittest).
+* `run.py` — the official DOGFOOD 2026 acceptance checker. HTTP only, no login: it attaches the session cookies from `.dogfood.toml` and probes the public gallery, fixture content, deadline enforcement, judge isolation, participant refusal and CSV export. Its output is committed verbatim to [`acceptance-report.txt`](acceptance-report.txt) — 7 of 7 probes pass.
+* `docker-compose.offline.yml` — the air-gap proof: `internal: true` removes the gateway, so DNS and outbound TCP fail, and the acceptance checker still passes.
+* `tests/test_event_isolation.py`: Multi-hackathon boundary — draft visibility, per-event public pages, cross-event write refusal, row-id borrowing, audit coverage (10 tests, unittest).
+* `tests/test_migrations.py`: The version 1 → 2 upgrade path, idempotency, and "never invent a missing table" (10 tests, unittest).
+
+`tmp/` holds throwaway developer probes. It is gitignored, excluded from the Docker
+build context, and is **not** part of the release, so nothing in it is quoted as
+evidence anywhere in these documents.
+
+Full instructions: **[TESTING.md](TESTING.md)**. Per-tier results and where each
+verified behaviour lives: **[TIER-MATRIX.md](TIER-MATRIX.md)**. Deployment,
+backups and upgrades: **[OPERATIONS.md](OPERATIONS.md)**. Threat model:
+**[SECURITY.md](SECURITY.md)**.
 
