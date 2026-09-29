@@ -19,13 +19,15 @@ state worth protecting is the volume.
 | **Laptop demo, no container** | `python -m app` | Needs Python 3.12 only. Data lands in `./data`. |
 | **LAN demo** | `LOCKDOWN_BIND=0.0.0.0 docker compose up -d` | Reachable from other machines. Plain HTTP: see §8 before doing this on an untrusted network. |
 | **Air-gapped proof** | `docker compose -f docker-compose.yml -f docker-compose.offline.yml up -d` | No gateway, no DNS, no published port; reached with `docker compose exec`. |
+| **Hosted container (Render)** | `Dockerfile` at the repository root; see §2.1 and §8 | Set `PORTAL_HOST=0.0.0.0`. The port follows the platform's `PORT` (`10000` on Render); set `PORTAL_PORT=10000` to state it explicitly. Mount a disk at `/data`, or state lives only as long as the instance. |
 | **Behind a reverse proxy** | §8 | Keep the portal on loopback and let the proxy hold the certificate. |
 
 `docker compose ps` is the health view: the image defines a `HEALTHCHECK` that
 probes `GET /gallery` every 15 s (5 s timeout, 30 s start period, 4 retries), so
 `healthy` means the socket, the router, the seeded database and the template
-layer are all alive. `restart: unless-stopped` means the container comes back
-after a host reboot.
+layer are all alive. The probe resolves the port exactly as §2.1 does, so it
+follows a hosted platform's port rather than assuming `8081`.
+`restart: unless-stopped` means the container comes back after a host reboot.
 
 ---
 
@@ -40,8 +42,15 @@ runs on a laptop, in Compose and in an isolated test box.
 | --- | --- | --- |
 | `PORTAL_HOST` | `0.0.0.0` | Interface to bind. Inside a container `0.0.0.0` is correct; the published port is what limits exposure. |
 | `PORTAL_PORT` | `8081` | Port to serve on. |
-| `PORTAL_BASE_URL` | `http://localhost:$PORTAL_PORT` | Absolute base URL used in printed links and boot messages. |
+| `PORT` | unset | Read **only** when `PORTAL_PORT` is unset. It is the name container hosts inject — Render sets it to `10000` — so a hosted deploy is reachable without translating names. |
+| `PORTAL_BASE_URL` | `http://localhost:$PORTAL_PORT`, or `$RENDER_EXTERNAL_URL` when set | Absolute base URL used in printed links and boot messages. |
+| `RENDER_EXTERNAL_URL` | unset | Read **only** when `PORTAL_BASE_URL` is unset. Render injects the service's public `https://…` address, so the boot banner names the real host instead of loopback. |
 | `PORTAL_PRIMARY_EVENT` | `sample-hack-2026` | Which hackathon the unqualified public pages (`/`, `/gallery`, `/results`) show. |
+
+The image pins no port of its own: it sets `PORTAL_HOST=0.0.0.0` and leaves the
+port to the chain above, so a platform that injects `PORT` needs no translation
+layer and the health probe in §1 follows the same chain. Compose passes
+`PORTAL_PORT` explicitly (§2.4), which is why the local default is `8081`.
 
 ### 2.2 Storage
 
@@ -315,6 +324,19 @@ deliberate default for loopback and LAN demos, and it means the transport is
 3. Set `PORTAL_BASE_URL` to the external URL if the portal's own printed links
    need to match it.
 
+A **hosted container platform** (Render and its equivalents) is the same shape:
+the platform terminates TLS and forwards to the container, so set
+`PORTAL_HOST=0.0.0.0` and `PORTAL_PORT=10000` (Render's port) and let the platform
+hold the certificate. Two platform-specific differences matter:
+
+* **State is not persistent until you mount it.** Attach the platform's disk at
+  `/data`, the image's default `PORTAL_DATA_DIR`. Without it every redeploy starts
+  from an empty database, re-seeds and forgets every submission; §4.1 explains why
+  a volume rather than a bind mount is the right choice, and the same reasoning
+  applies to a platform disk.
+* **`PORTAL_FAST_LOGIN` stays off**, because a hosted URL is reachable by anyone
+  who learns it and that endpoint mints a session without a password (§2.3).
+
 Two behaviours to plan around:
 
 * **`X-Forwarded-For` is not read.** `request.client_ip` is the socket peer, so
@@ -386,6 +408,8 @@ writes until it commits or the timeout expires. Keep one writer.
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
+| Docker build fails with `failed to compute cache key: ".dogfood.toml": not found` (or the same for `run.py`, `fixtures.json`) | The file is not in the build context. Hosted builders such as Render clone the repository, so a gitignored or untracked file is simply absent when `COPY` runs | `git ls-files .dogfood.toml run.py fixtures.json` must list all three; they are tracked files — `.gitignore` and `.dockerignore` must not exclude them |
+| Deploy succeeds but the platform reports no open port, or its health check fails | The container bound `8081` while the platform probes its own port (Render uses `10000`) | Set `PORTAL_PORT=10000` to match, or leave `PORTAL_PORT` unset and let the platform's `PORT` decide (§2.1) |
 | `Bind for 127.0.0.1:8081 failed: port is already allocated` | Something already holds 8081 | `LOCKDOWN_PORT=9000 docker compose up -d` |
 | `[boot] cannot bind port 8081` on a host run | A local process holds the port | `python -m app --port 9000`, or free the port |
 | `docker compose ps` shows `unhealthy` | `/gallery` is not returning `200` | `docker compose logs portal`. The check has a 30 s start period, so give a first boot a moment |

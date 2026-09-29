@@ -1,0 +1,31 @@
+# DOGFOOD 2026 acceptance configuration for the Lockdown portal.
+#
+# The session tokens below are the deterministic demo sessions the portal
+# prints on every boot (`python3 -m app`). They are demo credentials for
+# synthetic fixture data, so this file is safe to commit.
+
+[portal]
+# The portal's own default port (config.PORT); override with PORTAL_PORT.
+base_url = "http://localhost:8081"
+
+[tiers]
+# T1 core:      gallery, fixture content, deadline enforcement.
+# T2 judging:   judge isolation, participant refusal, CSV export.
+claimed = ["T1", "T2"]
+pitch = "Offline, zero-dependency hackathon portal: fixture-seeded events, deadline enforcement in the API, normalised judging, append-only audit trail."
+
+[routes]
+gallery = "/gallery"
+# The spec route may be /projects/new; both are registered.
+submit = "/participant/project/new"
+judge_scores = "/api/judge/scores"
+# This is the address that returns judge_a's own scores. The checker sends it
+# with judge_b's cookie and expects a 403.
+peer_scores = "/api/judge/scores?judge=tomas.varga@example.org"
+csv_export = "/api/export.csv"
+
+[auth]
+organizer = "Cookie: session=sess_org_3f9a21c4"
+judge_a = "Cookie: session=sess_jdg_a_91bc4730"
+judge_b = "Cookie: session=sess_jdg_b_44de8a12"
+participant = "Cookie: session=sess_prt_2e8877ab"

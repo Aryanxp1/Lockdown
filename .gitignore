@@ -9,10 +9,16 @@ data/
 data-test/
 data-*/
 tmp/
-.dogfood.toml
 .env
 .venv/
 venv/
 
 # Local browser-automation tooling output (screenshots, console logs, traces).
 .playwright-mcp/
+
+# `.dogfood.toml` is deliberately not ignored. It is the DOGFOOD 2026 acceptance
+# configuration (routes, claimed tiers, deterministic demo session cookies for
+# synthetic fixture data), it is a tracked file, and the Dockerfile copies it into
+# the image. Hosted builders such as Render start from a clone of this repository,
+# so anything ignored here is simply absent from the build context and
+# `COPY ... .dogfood.toml ./` fails.

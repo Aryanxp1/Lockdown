@@ -24,8 +24,16 @@ HOST = _env("PORTAL_HOST", "0.0.0.0")
 # 8081 rather than 8080: 8080 is the first port most local dev servers grab, and
 # a collision there would look like a broken portal. Override with PORTAL_PORT
 # or `python3 -m app --port`. `.dogfood.toml` points at this default.
-PORT = int(_env("PORTAL_PORT", "8081"))
-BASE_URL = _env("PORTAL_BASE_URL", "http://localhost:%d" % PORT).rstrip("/")
+#
+# `PORT` is the name container hosts inject (Render uses 10000) and it is only
+# consulted when PORTAL_PORT is unset, so a laptop, Compose and the test suites
+# are unaffected by its presence.
+PORT = int(_env("PORTAL_PORT", _env("PORT", "8081")))
+# Render injects the public address as RENDER_EXTERNAL_URL, so boot messages show
+# the real hostname there; PORTAL_BASE_URL overrides both.
+BASE_URL = _env(
+    "PORTAL_BASE_URL", _env("RENDER_EXTERNAL_URL", "http://localhost:%d" % PORT)
+).rstrip("/")
 PUBLIC_EVENT_SLUG = _env("PORTAL_PRIMARY_EVENT", "sample-hack-2026")
 
 # --- storage ------------------------------------------------------------

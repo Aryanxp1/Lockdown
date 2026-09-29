@@ -19,3 +19,8 @@ Dockerfile
 docker-compose.yml
 docker-compose.offline.yml
 .dockerignore
+
+# Nothing above may exclude app/, tests/, fixtures.json, run.py or .dogfood.toml:
+# the Dockerfile COPYs all five into the image, and a hosted builder (Render)
+# builds from a plain clone of the repository, so an untracked file is not in the
+# context at all. `git ls-files .dogfood.toml run.py fixtures.json` is the check.
